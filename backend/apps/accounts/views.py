@@ -26,7 +26,6 @@ def login_view(request):
     if not user:
         return Response({'error': 'Invalid credentials'}, status=401)
 
-    # Audit log — safe here because `request` and `user` exist in this scope
     log(request, 'login', 'User', user.id, f'{user.username} logged in')
 
     refresh = RefreshToken.for_user(user)
@@ -72,7 +71,20 @@ def garage_settings(request):
     serializer = GarageSettingsSerializer(obj, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)
     serializer.save()
+    log(request, 'update', 'GarageSettings', obj.id,
+        f'Updated business settings')
     return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def public_settings(request):
+    """Public-safe subset of GarageSettings — no auth required."""
+    shop = GarageSettings.load()
+    return Response({
+        'name': shop.name,
+        'currency_symbol': shop.currency_symbol or shop.currency_code or 'UGX',
+    })
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -85,7 +97,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         user_id = self.request.query_params.get('user')
         if user_id:
             qs = qs.filter(user_id=user_id)
-        action = self.request.query_params.get('action')
-        if action:
-            qs = qs.filter(action=action)
+        action_ = self.request.query_params.get('action')
+        if action_:
+            qs = qs.filter(action=action_)
         return qs[:500]
