@@ -45,8 +45,18 @@ def _range_from_params(request):
         start = today.replace(month=1, day=1)
         end = today
     elif period == 'custom':
-        start = datetime.strptime(request.query_params.get('start'), '%Y-%m-%d').date()
-        end = datetime.strptime(request.query_params.get('end'), '%Y-%m-%d').date()
+        start_raw = (request.query_params.get('start') or '').strip()
+        end_raw = (request.query_params.get('end') or '').strip()
+        try:
+            start = datetime.strptime(start_raw, '%Y-%m-%d').date() if start_raw else today
+        except ValueError:
+            start = today
+        try:
+            end = datetime.strptime(end_raw, '%Y-%m-%d').date() if end_raw else today
+        except ValueError:
+            end = today
+        if start > end:
+            start, end = end, start
     else:
         start = end = today
     return start, end
