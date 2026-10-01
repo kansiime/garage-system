@@ -15,6 +15,7 @@ from apps.purchases.models import Purchase
 from apps.debts.models import Debt
 from apps.inventory.models import Product
 from apps.expenses.models import Expense
+from apps.returns.models import Return
 from apps.accounts.models import GarageSettings
 
 from .pdf_generator import generate_report_pdf
@@ -25,7 +26,6 @@ from .excel_generator import generate_report_excel
 # Helpers
 # ---------------------------------------------------------------------------
 def _local_today():
-    """Return today's date in the local timezone."""
     return timezone.localtime().date()
 
 
@@ -61,7 +61,6 @@ def _shop_meta():
 
 
 def _filter_by_local_date(qs, start, end, field='created_at'):
-    """Filter a queryset by LOCAL date range."""
     tz = timezone.get_current_timezone()
     start_dt = timezone.make_aware(datetime.combine(start, datetime.min.time()), tz)
     end_dt = timezone.make_aware(
@@ -71,7 +70,6 @@ def _filter_by_local_date(qs, start, end, field='created_at'):
 
 
 def _filter_expenses_by_date(qs, start, end):
-    """Expenses have an explicit DateField — filter directly, no timezone needed."""
     return qs.filter(expense_date__gte=start, expense_date__lte=end)
 
 
@@ -92,16 +90,22 @@ def dashboard_summary(request):
             (i.quantity * (i.unit_price - i.cost_price) for i in items),
             Decimal('0'),
         )
-        return {
-            'total': float(total),
-            'profit': float(profit),
-            'count': sales.count(),
-        }
+        return {'total': float(total), 'profit': float(profit), 'count': sales.count()}
 
     def aggregate_expenses(start, end):
         qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
         total = qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
         return {'total': float(total), 'count': qs.count()}
+
+    def aggregate_returns(start, end):
+        qs = _filter_by_local_date(Return.objects.all(), start, end)
+        total = qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
+        return {
+            'total': float(total),
+            'count': qs.count(),
+            'sales': qs.filter(return_type='sales').count(),
+            'purchase': qs.filter(return_type='purchase').count(),
+        }
 
     purchases_today = _filter_by_local_date(Purchase.objects.all(), today, today)
     purchases_month = _filter_by_local_date(Purchase.objects.all(), month_start, today)
@@ -120,6 +124,8 @@ def dashboard_summary(request):
     month_sales = aggregate_sales(month_start, today)
     today_expenses = aggregate_expenses(today, today)
     month_expenses = aggregate_expenses(month_start, today)
+    today_returns = aggregate_returns(today, today)
+    month_returns = aggregate_returns(month_start, today)
 
     return Response({
         'today': today_sales,
@@ -128,8 +134,10 @@ def dashboard_summary(request):
         'expenses_today_count': today_expenses['count'],
         'expenses_month': month_expenses['total'],
         'expenses_month_count': month_expenses['count'],
-        'net_profit_today': today_sales['profit'] - today_expenses['total'],
-        'net_profit_month': month_sales['profit'] - month_expenses['total'],
+        'net_profit_today': today_sales['profit'] - today_expenses['total'] - today_returns['total'],
+        'net_profit_month': month_sales['profit'] - month_expenses['total'] - month_returns['total'],
+        'returns_today': today_returns,
+        'returns_month': month_returns,
         'purchases_today': float(
             purchases_today.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
         ),
@@ -163,8 +171,8 @@ def reports_overview(request):
     purchases_qs = _filter_by_local_date(Purchase.objects.all(), start, end)
     debts_qs = _filter_by_local_date(Debt.objects.all(), start, end)
     expenses_qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
+    returns_qs = _filter_by_local_date(Return.objects.all(), start, end)
 
-    # --- KPIs ---
     total_sales = sales_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
     total_purchases = purchases_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
 
@@ -173,7 +181,8 @@ def reports_overview(request):
     gross_profit_dec = revenue_dec - cost_dec
 
     total_expenses_dec = expenses_qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
-    net_profit_dec = gross_profit_dec - total_expenses_dec
+    total_returns_dec = returns_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
+    net_profit_dec = gross_profit_dec - total_expenses_dec - total_returns_dec
 
     total_sales_f = float(total_sales)
     total_purchases_f = float(total_purchases)
@@ -181,6 +190,7 @@ def reports_overview(request):
     cost_f = float(cost_dec)
     gross_profit_f = float(gross_profit_dec)
     total_expenses_f = float(total_expenses_dec)
+    total_returns_f = float(total_returns_dec)
     net_profit_f = float(net_profit_dec)
 
     count = sales_qs.count()
@@ -188,7 +198,6 @@ def reports_overview(request):
     net_margin = round((net_profit_f / revenue_f * 100) if revenue_f else 0, 1)
     average_sale = round(total_sales_f / count, 0) if count else 0
 
-    # --- Sales trend ---
     trend = (
         sales_qs.annotate(day=TruncDate('created_at', tzinfo=timezone.get_current_timezone()))
         .values('day')
@@ -196,79 +205,58 @@ def reports_overview(request):
         .order_by('day')
     )
     sales_trend = [
-        {
-            'date': t['day'].strftime('%Y-%m-%d'),
-            'total': float(t['total'] or Decimal('0')),
-            'count': t['count'],
-        }
+        {'date': t['day'].strftime('%Y-%m-%d'),
+         'total': float(t['total'] or Decimal('0')),
+         'count': t['count']}
         for t in trend
     ]
 
-    # --- Top products ---
     product_map = {}
     for i in items_qs:
         key = i.product.name
         if key not in product_map:
-            product_map[key] = {
-                'name': key, 'qty': 0,
-                'revenue': Decimal('0'), 'cost': Decimal('0'),
-            }
+            product_map[key] = {'name': key, 'qty': 0,
+                                'revenue': Decimal('0'), 'cost': Decimal('0')}
         product_map[key]['qty'] += i.quantity
         product_map[key]['revenue'] += i.quantity * i.unit_price
         product_map[key]['cost'] += i.quantity * i.cost_price
 
-    top_products = sorted(
-        product_map.values(), key=lambda x: x['revenue'], reverse=True
-    )[:10]
+    top_products = sorted(product_map.values(), key=lambda x: x['revenue'], reverse=True)[:10]
     top_products = [
-        {
-            'name': p['name'],
-            'qty': p['qty'],
-            'revenue': float(p['revenue']),
-            'cost': float(p['cost']),
-            'profit': float(p['revenue'] - p['cost']),
-        }
+        {'name': p['name'], 'qty': p['qty'],
+         'revenue': float(p['revenue']), 'cost': float(p['cost']),
+         'profit': float(p['revenue'] - p['cost'])}
         for p in top_products
     ]
 
-    # --- Payment mix ---
     payment_mix_raw = (
         sales_qs.values('payment_type')
         .annotate(count=Count('id'), total=Sum('total_amount'))
         .order_by('-total')
     )
     payment_mix = [
-        {
-            'type': p['payment_type'],
-            'count': p['count'],
-            'total': float(p['total'] or Decimal('0')),
-        }
+        {'type': p['payment_type'], 'count': p['count'],
+         'total': float(p['total'] or Decimal('0'))}
         for p in payment_mix_raw
     ]
 
-    # --- Cash vs Credit ---
     def _sum_by_type(t):
         r = sales_qs.filter(payment_type=t).aggregate(
-            total=Sum('total_amount'), count=Count('id')
-        )
+            total=Sum('total_amount'), count=Count('id'))
         return {'total': float(r['total'] or Decimal('0')), 'count': r['count'] or 0}
 
     cash_stats = _sum_by_type('cash')
     credit_stats = _sum_by_type('credit')
     partial_stats = _sum_by_type('partial')
 
-    # --- Top customers ---
     customer_map = {}
     for s in sales_qs:
         name = (s.customer_name or '').strip() or 'Walk-in'
         if name not in customer_map:
             customer_map[name] = {
-                'name': name,
-                'phone': s.customer_phone or '',
-                'count': 0,
-                'total': Decimal('0'),
-                'balance': Decimal('0'),
-                'last_visit': s.created_at,
+                'name': name, 'phone': s.customer_phone or '',
+                'count': 0, 'total': Decimal('0'),
+                'balance': Decimal('0'), 'last_visit': s.created_at,
             }
         customer_map[name]['count'] += 1
         customer_map[name]['total'] += s.total_amount
@@ -278,67 +266,68 @@ def reports_overview(request):
             if s.customer_phone:
                 customer_map[name]['phone'] = s.customer_phone
 
-    top_customers = sorted(
-        customer_map.values(), key=lambda x: x['total'], reverse=True
-    )[:10]
+    top_customers = sorted(customer_map.values(), key=lambda x: x['total'], reverse=True)[:10]
     top_customers = [
-        {
-            'name': c['name'],
-            'phone': c['phone'],
-            'count': c['count'],
-            'total': float(c['total']),
-            'balance': float(c['balance']),
-            'last_visit': timezone.localtime(c['last_visit']).strftime('%Y-%m-%d'),
-        }
+        {'name': c['name'], 'phone': c['phone'], 'count': c['count'],
+         'total': float(c['total']), 'balance': float(c['balance']),
+         'last_visit': timezone.localtime(c['last_visit']).strftime('%Y-%m-%d')}
         for c in top_customers
     ]
 
-    # --- Stock by category ---
     categories = {}
     for p in Product.objects.select_related('category'):
         cat = p.category.name if p.category else 'Uncategorised'
         if cat not in categories:
-            categories[cat] = {
-                'category': cat, 'value': Decimal('0'),
-                'products': 0, 'qty': 0,
-            }
+            categories[cat] = {'category': cat, 'value': Decimal('0'),
+                               'products': 0, 'qty': 0}
         categories[cat]['value'] += p.stock_value
         categories[cat]['qty'] += p.quantity
         categories[cat]['products'] += 1
     stock_by_category = [
-        {
-            'category': c['category'],
-            'value': float(c['value']),
-            'qty': c['qty'],
-            'products': c['products'],
-        }
+        {'category': c['category'], 'value': float(c['value']),
+         'qty': c['qty'], 'products': c['products']}
         for c in categories.values()
     ]
 
-    # --- Expenses by category ---
     expenses_by_category_map = {}
     for e in expenses_qs:
         cat = e.category.name if e.category else 'Uncategorised'
         if cat not in expenses_by_category_map:
-            expenses_by_category_map[cat] = {
-                'category': cat, 'total': Decimal('0'), 'count': 0,
-            }
+            expenses_by_category_map[cat] = {'category': cat, 'total': Decimal('0'), 'count': 0}
         expenses_by_category_map[cat]['total'] += e.amount
         expenses_by_category_map[cat]['count'] += 1
     expenses_by_category = sorted(
-        [
-            {
-                'category': k,
-                'total': float(v['total']),
-                'count': v['count'],
-            }
-            for k, v in expenses_by_category_map.items()
-        ],
-        key=lambda x: x['total'],
-        reverse=True,
+        [{'category': k, 'total': float(v['total']), 'count': v['count']}
+         for k, v in expenses_by_category_map.items()],
+        key=lambda x: x['total'], reverse=True,
     )
 
-    # --- Debt summary ---
+    returns_sales = returns_qs.filter(return_type='sales')
+    returns_purchase = returns_qs.filter(return_type='purchase')
+
+    returns_by_type = [
+        {'type': 'Sales Returns',
+         'total': float(returns_sales.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
+         'count': returns_sales.count()},
+        {'type': 'Purchase Returns',
+         'total': float(returns_purchase.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
+         'count': returns_purchase.count()},
+    ]
+
+    returns_by_product_map = {}
+    for r in returns_qs:
+        for item in r.items.all():
+            name = item.product.name
+            if name not in returns_by_product_map:
+                returns_by_product_map[name] = {'name': name, 'qty': 0, 'total': Decimal('0')}
+            returns_by_product_map[name]['qty'] += item.quantity
+            returns_by_product_map[name]['total'] += item.quantity * item.unit_price
+    returns_by_product = sorted(
+        [{'name': k, 'qty': v['qty'], 'total': float(v['total'])}
+         for k, v in returns_by_product_map.items()],
+        key=lambda x: x['total'], reverse=True,
+    )[:10]
+
     total_receivable = float(
         sum((d.balance for d in debts_qs if d.debt_type == 'receivable'), Decimal('0'))
     )
@@ -353,9 +342,10 @@ def reports_overview(request):
         'kpis': {
             'total_sales': total_sales_f,
             'total_purchases': total_purchases_f,
-            'total_profit': gross_profit_f,          # kept for backwards-compat (gross)
+            'total_profit': gross_profit_f,
             'gross_profit': gross_profit_f,
             'total_expenses': total_expenses_f,
+            'total_returns': total_returns_f,
             'net_profit': net_profit_f,
             'gross_margin': gross_margin,
             'net_margin': net_margin,
@@ -367,41 +357,54 @@ def reports_overview(request):
                 sum((p.stock_value for p in Product.objects.all()), Decimal('0'))
             ),
         },
-        'cash_vs_credit': {
-            'cash': cash_stats,
-            'credit': credit_stats,
-            'partial': partial_stats,
-        },
+        'cash_vs_credit': {'cash': cash_stats, 'credit': credit_stats, 'partial': partial_stats},
         'sales_trend': sales_trend,
         'top_products': top_products,
         'top_customers': top_customers,
         'payment_mix': payment_mix,
         'stock_by_category': stock_by_category,
         'expenses_by_category': expenses_by_category,
+        'returns_by_type': returns_by_type,
+        'returns_by_product': returns_by_product,
     })
 
 
 # ---------------------------------------------------------------------------
 # Detailed reports (PDF / Excel / JSON)
 # ---------------------------------------------------------------------------
+def _respond(request, title, headers, rows, summary):
+    """
+    Query param: 'output' = 'json' | 'pdf' | 'excel'
+    (renamed from 'format' to avoid DRF's built-in ?format= negotiation)
+    """
+    output = request.query_params.get('output', 'json')
+    if output == 'pdf':
+        buf = generate_report_pdf(title, headers, rows, summary)
+        resp = HttpResponse(buf.getvalue(), content_type='application/pdf')
+        resp['Content-Disposition'] = f'attachment; filename="{title.replace(" ", "_")}.pdf"'
+        return resp
+    elif output == 'excel':
+        buf = generate_report_excel(title, headers, rows, summary)
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        resp['Content-Disposition'] = f'attachment; filename="{title.replace(" ", "_")}.xlsx"'
+        return resp
+    return Response({'title': title, 'headers': headers, 'rows': rows, 'summary': summary})
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def sales_report(request):
     start, end = _range_from_params(request)
     sales = _filter_by_local_date(Sale.objects.all(), start, end).order_by('-created_at')
     headers = ['Reference', 'Date', 'Customer', 'Payment', 'Total', 'Paid', 'Balance']
-    rows = [
-        [
-            s.reference,
-            timezone.localtime(s.created_at).strftime('%Y-%m-%d %H:%M'),
-            s.customer_name or '-',
-            s.payment_type,
-            float(s.total_amount),
-            float(s.amount_paid),
-            float(s.balance),
-        ]
-        for s in sales
-    ]
+    rows = [[s.reference,
+             timezone.localtime(s.created_at).strftime('%Y-%m-%d %H:%M'),
+             s.customer_name or '-', s.payment_type,
+             float(s.total_amount), float(s.amount_paid), float(s.balance)]
+            for s in sales]
     total = float(sales.aggregate(t=Sum('total_amount'))['t'] or Decimal('0'))
     summary = {**_shop_meta(), 'Total Sales': total, 'Transactions': sales.count()}
     return _respond(request, f"Sales Report ({start} to {end})", headers, rows, summary)
@@ -411,29 +414,16 @@ def sales_report(request):
 @permission_classes([IsAuthenticated])
 def purchases_report(request):
     start, end = _range_from_params(request)
-    purchases = _filter_by_local_date(
-        Purchase.objects.all(), start, end
-    ).order_by('-created_at')
+    purchases = _filter_by_local_date(Purchase.objects.all(), start, end).order_by('-created_at')
     headers = ['Reference', 'Date', 'Supplier', 'Status', 'Total', 'Paid', 'Balance']
-    rows = [
-        [
-            p.reference,
-            timezone.localtime(p.created_at).strftime('%Y-%m-%d %H:%M'),
-            p.supplier.name if p.supplier else '-',
-            p.status,
-            float(p.total_amount),
-            float(p.amount_paid),
-            float(p.balance),
-        ]
-        for p in purchases
-    ]
-    summary = {
-        **_shop_meta(),
-        'Total Purchases': float(
-            purchases.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
-        ),
-        'Count': purchases.count(),
-    }
+    rows = [[p.reference,
+             timezone.localtime(p.created_at).strftime('%Y-%m-%d %H:%M'),
+             p.supplier.name if p.supplier else '-', p.status,
+             float(p.total_amount), float(p.amount_paid), float(p.balance)]
+            for p in purchases]
+    summary = {**_shop_meta(),
+               'Total Purchases': float(purchases.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
+               'Count': purchases.count()}
     return _respond(request, f"Purchases Report ({start} to {end})", headers, rows, summary)
 
 
@@ -442,25 +432,12 @@ def purchases_report(request):
 def stock_report(request):
     products = Product.objects.all().order_by('name')
     headers = ['SKU', 'Name', 'Category', 'Qty', 'Cost Price', 'Selling Price', 'Stock Value']
-    rows = [
-        [
-            p.sku,
-            p.name,
-            p.category.name if p.category else '-',
-            p.quantity,
-            float(p.cost_price),
-            float(p.selling_price),
-            float(p.stock_value),
-        ]
-        for p in products
-    ]
-    summary = {
-        **_shop_meta(),
-        'Total Products': products.count(),
-        'Total Stock Value': float(
-            sum((p.stock_value for p in products), Decimal('0'))
-        ),
-    }
+    rows = [[p.sku, p.name, p.category.name if p.category else '-',
+             p.quantity, float(p.cost_price), float(p.selling_price),
+             float(p.stock_value)] for p in products]
+    summary = {**_shop_meta(),
+               'Total Products': products.count(),
+               'Total Stock Value': float(sum((p.stock_value for p in products), Decimal('0')))}
     return _respond(request, "Stock Report", headers, rows, summary)
 
 
@@ -470,27 +447,13 @@ def debts_report(request):
     start, end = _range_from_params(request)
     debts = _filter_by_local_date(Debt.objects.all(), start, end)
     headers = ['Date', 'Type', 'Party', 'Amount', 'Paid', 'Balance', 'Status']
-    rows = [
-        [
-            timezone.localtime(d.created_at).strftime('%Y-%m-%d'),
-            d.get_debt_type_display(),
-            d.party_name,
-            float(d.amount),
-            float(d.amount_paid),
-            float(d.balance),
-            d.status,
-        ]
-        for d in debts
-    ]
-    summary = {
-        **_shop_meta(),
-        'Total Receivables': float(
-            sum((d.balance for d in debts if d.debt_type == 'receivable'), Decimal('0'))
-        ),
-        'Total Payables': float(
-            sum((d.balance for d in debts if d.debt_type == 'payable'), Decimal('0'))
-        ),
-    }
+    rows = [[timezone.localtime(d.created_at).strftime('%Y-%m-%d'),
+             d.get_debt_type_display(), d.party_name,
+             float(d.amount), float(d.amount_paid), float(d.balance), d.status]
+            for d in debts]
+    summary = {**_shop_meta(),
+               'Total Receivables': float(sum((d.balance for d in debts if d.debt_type == 'receivable'), Decimal('0'))),
+               'Total Payables': float(sum((d.balance for d in debts if d.debt_type == 'payable'), Decimal('0')))}
     return _respond(request, f"Debts Report ({start} to {end})", headers, rows, summary)
 
 
@@ -501,12 +464,14 @@ def profit_report(request):
     sales = _filter_by_local_date(Sale.objects.all(), start, end)
     items = SaleItem.objects.filter(sale__in=sales)
     expenses = _filter_expenses_by_date(Expense.objects.all(), start, end)
+    returns = _filter_by_local_date(Return.objects.all(), start, end)
 
     revenue_dec = sum((i.quantity * i.unit_price for i in items), Decimal('0'))
     cost_dec = sum((i.quantity * i.cost_price for i in items), Decimal('0'))
     gross_dec = revenue_dec - cost_dec
     expenses_dec = expenses.aggregate(t=Sum('amount'))['t'] or Decimal('0')
-    net_dec = gross_dec - expenses_dec
+    returns_dec = returns.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
+    net_dec = gross_dec - expenses_dec - returns_dec
 
     headers = ['Product', 'Qty Sold', 'Revenue', 'Cost', 'Gross Profit']
     rows = []
@@ -518,24 +483,17 @@ def profit_report(request):
         product_map[pname]['qty'] += i.quantity
         product_map[pname]['rev'] += i.quantity * i.unit_price
         product_map[pname]['cost'] += i.quantity * i.cost_price
-
     for name, v in product_map.items():
-        rows.append([
-            name,
-            v['qty'],
-            float(v['rev']),
-            float(v['cost']),
-            float(v['rev'] - v['cost']),
-        ])
+        rows.append([name, v['qty'], float(v['rev']), float(v['cost']),
+                     float(v['rev'] - v['cost'])])
 
-    summary = {
-        **_shop_meta(),
-        'Revenue': float(revenue_dec),
-        'Cost of Goods': float(cost_dec),
-        'Gross Profit': float(gross_dec),
-        'Total Expenses': float(expenses_dec),
-        'Net Profit': float(net_dec),
-    }
+    summary = {**_shop_meta(),
+               'Revenue': float(revenue_dec),
+               'Cost of Goods': float(cost_dec),
+               'Gross Profit': float(gross_dec),
+               'Total Expenses': float(expenses_dec),
+               'Total Returns': float(returns_dec),
+               'Net Profit': float(net_dec)}
     return _respond(request, f"Profit Report ({start} to {end})", headers, rows, summary)
 
 
@@ -543,42 +501,36 @@ def profit_report(request):
 @permission_classes([IsAuthenticated])
 def expenses_report(request):
     start, end = _range_from_params(request)
-    expenses = _filter_expenses_by_date(
-        Expense.objects.all(), start, end
-    ).order_by('-expense_date')
+    expenses = _filter_expenses_by_date(Expense.objects.all(), start, end).order_by('-expense_date')
     headers = ['Date', 'Description', 'Category', 'Method', 'Reference', 'Amount']
-    rows = [
-        [
-            e.expense_date.strftime('%Y-%m-%d'),
-            e.description,
-            e.category.name if e.category else '-',
-            e.get_payment_method_display(),
-            e.reference or '-',
-            float(e.amount),
-        ]
-        for e in expenses
-    ]
+    rows = [[e.expense_date.strftime('%Y-%m-%d'), e.description,
+             e.category.name if e.category else '-',
+             e.get_payment_method_display(), e.reference or '-', float(e.amount)]
+            for e in expenses]
     total = float(expenses.aggregate(t=Sum('amount'))['t'] or Decimal('0'))
     summary = {**_shop_meta(), 'Total Expenses': total, 'Count': expenses.count()}
     return _respond(request, f"Expenses Report ({start} to {end})", headers, rows, summary)
 
 
-# ---------------------------------------------------------------------------
-# Format dispatcher
-# ---------------------------------------------------------------------------
-def _respond(request, title, headers, rows, summary):
-    fmt = request.query_params.get('format', 'json')
-    if fmt == 'pdf':
-        buf = generate_report_pdf(title, headers, rows, summary)
-        resp = HttpResponse(buf.getvalue(), content_type='application/pdf')
-        resp['Content-Disposition'] = f'attachment; filename="{title.replace(" ", "_")}.pdf"'
-        return resp
-    elif fmt == 'excel':
-        buf = generate_report_excel(title, headers, rows, summary)
-        resp = HttpResponse(
-            buf.getvalue(),
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        )
-        resp['Content-Disposition'] = f'attachment; filename="{title.replace(" ", "_")}.xlsx"'
-        return resp
-    return Response({'title': title, 'headers': headers, 'rows': rows, 'summary': summary})
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def returns_report(request):
+    start, end = _range_from_params(request)
+    returns = _filter_by_local_date(Return.objects.all(), start, end).order_by('-created_at')
+    headers = ['Reference', 'Date', 'Type', 'Party', 'Resolution', 'Original Ref', 'Total']
+    rows = [[r.reference,
+             timezone.localtime(r.created_at).strftime('%Y-%m-%d %H:%M'),
+             r.get_return_type_display(), r.party_name or '-',
+             r.get_resolution_display(), r.original_reference or '-',
+             float(r.total_amount)]
+            for r in returns]
+    total = float(returns.aggregate(t=Sum('total_amount'))['t'] or Decimal('0'))
+    sales_returns = returns.filter(return_type='sales')
+    purchase_returns = returns.filter(return_type='purchase')
+    summary = {**_shop_meta(),
+               'Total Returns Value': total,
+               'Sales Returns': sales_returns.count(),
+               'Sales Returns Value': float(sales_returns.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
+               'Purchase Returns': purchase_returns.count(),
+               'Purchase Returns Value': float(purchase_returns.aggregate(t=Sum('total_amount'))['t'] or Decimal('0'))}
+    return _respond(request, f"Returns Report ({start} to {end})", headers, rows, summary)

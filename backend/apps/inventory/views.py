@@ -1,5 +1,6 @@
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
 
 from .models import Category, Supplier, Product, StockMovement, StockReconciliation
 from .serializers import (
@@ -30,6 +31,18 @@ class ProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, RoleBasedPermission]
     allowed_roles = ['admin', 'manager', 'storekeeper', 'cashier']
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search) |
+                Q(sku__icontains=search) |
+                Q(category__name__icontains=search) |
+                Q(supplier__name__icontains=search)
+            )
+        return qs
+
 
 class StockMovementViewSet(viewsets.ModelViewSet):
     queryset = StockMovement.objects.all().order_by('-id')
@@ -45,7 +58,7 @@ class StockMovementViewSet(viewsets.ModelViewSet):
             product.quantity += movement.quantity
         elif movement.movement_type == 'out':
             product.quantity -= movement.quantity
-        else:  # adjust (set exact quantity)
+        else:
             product.quantity = movement.quantity
         product.save()
 

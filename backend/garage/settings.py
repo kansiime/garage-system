@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'apps.purchases',
     'apps.debts',
     'apps.expenses', 
+    'apps.returns', 
     'apps.reports',
 ]
 
@@ -179,6 +180,7 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
         'rest_framework.renderers.BrowsableAPIRenderer',
     ),
+    'URL_FORMAT_OVERRIDE': None,
 }
 
 SIMPLE_JWT = {
