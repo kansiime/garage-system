@@ -51,6 +51,7 @@ class AuditLog(models.Model):
         ('stock_adjust', 'Stock Adjustment'),
         ('reconcile', 'Reconciliation'),
         ('payment', 'Payment'),
+        ('expense', 'Expense'),
     ]
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs')
     action = models.CharField(max_length=30, choices=ACTIONS)

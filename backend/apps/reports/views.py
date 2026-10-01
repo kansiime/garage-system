@@ -14,6 +14,7 @@ from apps.sales.models import Sale, SaleItem
 from apps.purchases.models import Purchase
 from apps.debts.models import Debt
 from apps.inventory.models import Product
+from apps.expenses.models import Expense
 from apps.accounts.models import GarageSettings
 
 from .pdf_generator import generate_report_pdf
@@ -24,7 +25,7 @@ from .excel_generator import generate_report_excel
 # Helpers
 # ---------------------------------------------------------------------------
 def _local_today():
-    """Return today's date in the local (Kampala) timezone."""
+    """Return today's date in the local timezone."""
     return timezone.localtime().date()
 
 
@@ -35,7 +36,7 @@ def _range_from_params(request):
     if period == 'today':
         start = end = today
     elif period == 'week':
-        start = today - timedelta(days=6)   # inclusive: last 7 days including today
+        start = today - timedelta(days=6)
         end = today
     elif period == 'month':
         start = today.replace(day=1)
@@ -60,13 +61,18 @@ def _shop_meta():
 
 
 def _filter_by_local_date(qs, start, end, field='created_at'):
-    """Filter a queryset by LOCAL date range (uses the active timezone)."""
+    """Filter a queryset by LOCAL date range."""
     tz = timezone.get_current_timezone()
     start_dt = timezone.make_aware(datetime.combine(start, datetime.min.time()), tz)
     end_dt = timezone.make_aware(
         datetime.combine(end + timedelta(days=1), datetime.min.time()), tz
     )
     return qs.filter(**{f'{field}__gte': start_dt, f'{field}__lt': end_dt})
+
+
+def _filter_expenses_by_date(qs, start, end):
+    """Expenses have an explicit DateField — filter directly, no timezone needed."""
+    return qs.filter(expense_date__gte=start, expense_date__lte=end)
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +98,11 @@ def dashboard_summary(request):
             'count': sales.count(),
         }
 
+    def aggregate_expenses(start, end):
+        qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
+        total = qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+        return {'total': float(total), 'count': qs.count()}
+
     purchases_today = _filter_by_local_date(Purchase.objects.all(), today, today)
     purchases_month = _filter_by_local_date(Purchase.objects.all(), month_start, today)
 
@@ -105,9 +116,20 @@ def dashboard_summary(request):
 
     shop = GarageSettings.load()
 
+    today_sales = aggregate_sales(today, today)
+    month_sales = aggregate_sales(month_start, today)
+    today_expenses = aggregate_expenses(today, today)
+    month_expenses = aggregate_expenses(month_start, today)
+
     return Response({
-        'today': aggregate_sales(today, today),
-        'month': aggregate_sales(month_start, today),
+        'today': today_sales,
+        'month': month_sales,
+        'expenses_today': today_expenses['total'],
+        'expenses_today_count': today_expenses['count'],
+        'expenses_month': month_expenses['total'],
+        'expenses_month_count': month_expenses['count'],
+        'net_profit_today': today_sales['profit'] - today_expenses['total'],
+        'net_profit_month': month_sales['profit'] - month_expenses['total'],
         'purchases_today': float(
             purchases_today.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
         ),
@@ -127,7 +149,7 @@ def dashboard_summary(request):
 
 
 # ---------------------------------------------------------------------------
-# Rich reports overview (used by the Reports page)
+# Rich reports overview
 # ---------------------------------------------------------------------------
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -140,26 +162,33 @@ def reports_overview(request):
     items_qs = SaleItem.objects.filter(sale__in=sales_qs)
     purchases_qs = _filter_by_local_date(Purchase.objects.all(), start, end)
     debts_qs = _filter_by_local_date(Debt.objects.all(), start, end)
+    expenses_qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
 
-    # --- KPIs (all math done in Decimal, then cast to float at the end) ---
+    # --- KPIs ---
     total_sales = sales_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
     total_purchases = purchases_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
 
     revenue_dec = sum((i.quantity * i.unit_price for i in items_qs), Decimal('0'))
     cost_dec = sum((i.quantity * i.cost_price for i in items_qs), Decimal('0'))
-    profit_dec = revenue_dec - cost_dec
+    gross_profit_dec = revenue_dec - cost_dec
+
+    total_expenses_dec = expenses_qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    net_profit_dec = gross_profit_dec - total_expenses_dec
 
     total_sales_f = float(total_sales)
     total_purchases_f = float(total_purchases)
     revenue_f = float(revenue_dec)
     cost_f = float(cost_dec)
-    total_profit_f = float(profit_dec)
+    gross_profit_f = float(gross_profit_dec)
+    total_expenses_f = float(total_expenses_dec)
+    net_profit_f = float(net_profit_dec)
 
     count = sales_qs.count()
-    gross_margin = round((total_profit_f / revenue_f * 100) if revenue_f else 0, 1)
+    gross_margin = round((gross_profit_f / revenue_f * 100) if revenue_f else 0, 1)
+    net_margin = round((net_profit_f / revenue_f * 100) if revenue_f else 0, 1)
     average_sale = round(total_sales_f / count, 0) if count else 0
 
-    # --- Sales trend (per day) ---
+    # --- Sales trend ---
     trend = (
         sales_qs.annotate(day=TruncDate('created_at', tzinfo=timezone.get_current_timezone()))
         .values('day')
@@ -175,7 +204,7 @@ def reports_overview(request):
         for t in trend
     ]
 
-    # --- Top products by revenue ---
+    # --- Top products ---
     product_map = {}
     for i in items_qs:
         key = i.product.name
@@ -217,15 +246,13 @@ def reports_overview(request):
         for p in payment_mix_raw
     ]
 
-    # --- Cash vs Credit KPI ---
+    # --- Cash vs Credit ---
     def _sum_by_type(t):
         r = sales_qs.filter(payment_type=t).aggregate(
             total=Sum('total_amount'), count=Count('id')
         )
-        return {
-            'total': float(r['total'] or Decimal('0')),
-            'count': r['count'] or 0,
-        }
+        return {'total': float(r['total'] or Decimal('0')), 'count': r['count'] or 0}
+
     cash_stats = _sum_by_type('cash')
     credit_stats = _sum_by_type('credit')
     partial_stats = _sum_by_type('partial')
@@ -266,7 +293,7 @@ def reports_overview(request):
         for c in top_customers
     ]
 
-    # --- Stock value by category ---
+    # --- Stock by category ---
     categories = {}
     for p in Product.objects.select_related('category'):
         cat = p.category.name if p.category else 'Uncategorised'
@@ -288,6 +315,29 @@ def reports_overview(request):
         for c in categories.values()
     ]
 
+    # --- Expenses by category ---
+    expenses_by_category_map = {}
+    for e in expenses_qs:
+        cat = e.category.name if e.category else 'Uncategorised'
+        if cat not in expenses_by_category_map:
+            expenses_by_category_map[cat] = {
+                'category': cat, 'total': Decimal('0'), 'count': 0,
+            }
+        expenses_by_category_map[cat]['total'] += e.amount
+        expenses_by_category_map[cat]['count'] += 1
+    expenses_by_category = sorted(
+        [
+            {
+                'category': k,
+                'total': float(v['total']),
+                'count': v['count'],
+            }
+            for k, v in expenses_by_category_map.items()
+        ],
+        key=lambda x: x['total'],
+        reverse=True,
+    )
+
     # --- Debt summary ---
     total_receivable = float(
         sum((d.balance for d in debts_qs if d.debt_type == 'receivable'), Decimal('0'))
@@ -303,8 +353,12 @@ def reports_overview(request):
         'kpis': {
             'total_sales': total_sales_f,
             'total_purchases': total_purchases_f,
-            'total_profit': total_profit_f,
+            'total_profit': gross_profit_f,          # kept for backwards-compat (gross)
+            'gross_profit': gross_profit_f,
+            'total_expenses': total_expenses_f,
+            'net_profit': net_profit_f,
             'gross_margin': gross_margin,
+            'net_margin': net_margin,
             'transaction_count': count,
             'average_sale': average_sale,
             'receivables': total_receivable,
@@ -323,6 +377,7 @@ def reports_overview(request):
         'top_customers': top_customers,
         'payment_mix': payment_mix,
         'stock_by_category': stock_by_category,
+        'expenses_by_category': expenses_by_category,
     })
 
 
@@ -445,12 +500,15 @@ def profit_report(request):
     start, end = _range_from_params(request)
     sales = _filter_by_local_date(Sale.objects.all(), start, end)
     items = SaleItem.objects.filter(sale__in=sales)
+    expenses = _filter_expenses_by_date(Expense.objects.all(), start, end)
 
     revenue_dec = sum((i.quantity * i.unit_price for i in items), Decimal('0'))
     cost_dec = sum((i.quantity * i.cost_price for i in items), Decimal('0'))
-    profit_dec = revenue_dec - cost_dec
+    gross_dec = revenue_dec - cost_dec
+    expenses_dec = expenses.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    net_dec = gross_dec - expenses_dec
 
-    headers = ['Product', 'Qty Sold', 'Revenue', 'Cost', 'Profit']
+    headers = ['Product', 'Qty Sold', 'Revenue', 'Cost', 'Gross Profit']
     rows = []
     product_map = {}
     for i in items:
@@ -473,10 +531,36 @@ def profit_report(request):
     summary = {
         **_shop_meta(),
         'Revenue': float(revenue_dec),
-        'Cost': float(cost_dec),
-        'Gross Profit': float(profit_dec),
+        'Cost of Goods': float(cost_dec),
+        'Gross Profit': float(gross_dec),
+        'Total Expenses': float(expenses_dec),
+        'Net Profit': float(net_dec),
     }
     return _respond(request, f"Profit Report ({start} to {end})", headers, rows, summary)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def expenses_report(request):
+    start, end = _range_from_params(request)
+    expenses = _filter_expenses_by_date(
+        Expense.objects.all(), start, end
+    ).order_by('-expense_date')
+    headers = ['Date', 'Description', 'Category', 'Method', 'Reference', 'Amount']
+    rows = [
+        [
+            e.expense_date.strftime('%Y-%m-%d'),
+            e.description,
+            e.category.name if e.category else '-',
+            e.get_payment_method_display(),
+            e.reference or '-',
+            float(e.amount),
+        ]
+        for e in expenses
+    ]
+    total = float(expenses.aggregate(t=Sum('amount'))['t'] or Decimal('0'))
+    summary = {**_shop_meta(), 'Total Expenses': total, 'Count': expenses.count()}
+    return _respond(request, f"Expenses Report ({start} to {end})", headers, rows, summary)
 
 
 # ---------------------------------------------------------------------------
