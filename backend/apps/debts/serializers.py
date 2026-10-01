@@ -12,14 +12,17 @@ class DebtPaymentSerializer(serializers.ModelSerializer):
 
 class DebtSerializer(serializers.ModelSerializer):
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    promise_status = serializers.CharField(read_only=True)
     payments = DebtPaymentSerializer(many=True, read_only=True)
 
     class Meta:
         model = Debt
-        fields = ['id', 'debt_type', 'party_name', 'party_phone', 'amount',
-                  'amount_paid', 'balance', 'status', 'reference', 'notes',
-                  'payments', 'created_at']
-        read_only_fields = ['user', 'status', 'amount_paid', 'created_at']
+        fields = [
+            'id', 'debt_type', 'party_name', 'party_phone', 'amount',
+            'amount_paid', 'balance', 'status', 'reference', 'notes',
+            'promised_date', 'promise_status', 'payments', 'created_at',
+        ]
+        read_only_fields = ['user', 'status', 'amount_paid', 'created_at', 'promise_status']
 
 
 class RecordPaymentSerializer(serializers.Serializer):
