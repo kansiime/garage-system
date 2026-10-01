@@ -16,9 +16,11 @@ export default function ReportsPage() {
   const [end, setEnd] = useState('');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [downloadError, setDownloadError] = useState('');
 
+  // Build query string for downloads using `output=` (not `format=`)
   const buildQuery = (fmt) => {
-    const p = new URLSearchParams({ period, format: fmt });
+    const p = new URLSearchParams({ period, output: fmt });
     if (period === 'custom') { p.set('start', start); p.set('end', end); }
     return p.toString();
   };
@@ -29,14 +31,25 @@ export default function ReportsPage() {
     if (period === 'custom') { q.set('start', start); q.set('end', end); }
     api.get(`/reports/overview/?${q.toString()}`)
       .then((r) => setData(r.data))
+      .catch(() => setDownloadError('Could not load report data.'))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [period, start, end]);
 
   const download = async (key, fmt) => {
-    const url = `/reports/${key}/?${buildQuery(fmt)}`;
-    await downloadFile(url, `${key}_report.${fmt === 'pdf' ? 'pdf' : 'xlsx'}`);
+    setDownloadError('');
+    try {
+      const url = `/reports/${key}/?${buildQuery(fmt)}`;
+      await downloadFile(url, `${key}_report.${fmt === 'pdf' ? 'pdf' : 'xlsx'}`);
+    } catch (err) {
+      const status = err?.response?.status;
+      setDownloadError(
+        status
+          ? `Download failed (HTTP ${status}). Check backend logs.`
+          : 'Download failed. Please try again.'
+      );
+    }
   };
 
   const currency = data?.currency || 'UGX';
@@ -51,6 +64,13 @@ export default function ReportsPage() {
         </p>
       </div>
 
+      {downloadError && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">
+          {downloadError}
+        </div>
+      )}
+
+      {/* Period picker */}
       <div className="card mb-6">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
@@ -80,14 +100,23 @@ export default function ReportsPage() {
         <>
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <Kpi label="Total Sales"  value={money(data.kpis.total_sales)}  accent="" />
-            <Kpi label="Total Profit" value={money(data.kpis.total_profit)} accent="green" hint={`${data.kpis.gross_margin}% margin`} />
-            <Kpi label="Purchases"    value={money(data.kpis.total_purchases)} accent="amber" />
-            <Kpi label="Transactions" value={data.kpis.transaction_count} accent="purple" hint={`Avg ${money(data.kpis.average_sale)}`} />
-            <Kpi label="Receivables"  value={money(data.kpis.receivables)} accent="amber" />
-            <Kpi label="Payables"     value={money(data.kpis.payables)}    accent="red" />
-            <Kpi label="Stock Value"  value={money(data.kpis.stock_value)} accent="" />
+            <Kpi label="Total Sales" value={money(data.kpis.total_sales)} />
+            <Kpi label="Gross Profit" value={money(data.kpis.gross_profit || data.kpis.total_profit)}
+                 accent="green" hint={`${data.kpis.gross_margin}% margin`} />
+            <Kpi label="Total Expenses" value={money(data.kpis.total_expenses || 0)} accent="red" />
+            <Kpi label="Total Returns" value={money(data.kpis.total_returns || 0)} accent="amber" />
+            <Kpi label="Net Profit" value={money(data.kpis.net_profit || 0)}
+                 accent={(data.kpis.net_profit || 0) >= 0 ? 'green' : 'red'}
+                 hint={`${data.kpis.net_margin || 0}% net margin`} />
+            <Kpi label="Purchases" value={money(data.kpis.total_purchases)} accent="amber" />
+            <Kpi label="Transactions" value={data.kpis.transaction_count} accent="purple"
+                 hint={`Avg ${money(data.kpis.average_sale)}`} />
+            <Kpi label="Receivables" value={money(data.kpis.receivables)} accent="amber" />
+            <Kpi label="Payables" value={money(data.kpis.payables)} accent="red" />
+            <Kpi label="Stock Value" value={money(data.kpis.stock_value)} />
             <Kpi label="Gross Margin" value={`${data.kpis.gross_margin}%`} accent="green" />
+            <Kpi label="Net Margin" value={`${data.kpis.net_margin || 0}%`}
+                 accent={(data.kpis.net_margin || 0) >= 0 ? 'green' : 'red'} />
           </div>
 
           {/* Cash vs Credit */}
@@ -97,27 +126,21 @@ export default function ReportsPage() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="p-4 rounded-lg bg-green-50 border border-green-100">
                   <p className="text-xs font-semibold text-green-800 uppercase">Cash</p>
-                  <p className="text-2xl font-bold text-green-900 mt-1">
-                    {money(data.cash_vs_credit.cash.total)}
-                  </p>
+                  <p className="text-2xl font-bold text-green-900 mt-1">{money(data.cash_vs_credit.cash.total)}</p>
                   <p className="text-xs text-green-700 mt-1">
                     {data.cash_vs_credit.cash.count} sale{data.cash_vs_credit.cash.count !== 1 && 's'}
                   </p>
                 </div>
                 <div className="p-4 rounded-lg bg-amber-50 border border-amber-100">
                   <p className="text-xs font-semibold text-amber-800 uppercase">Credit</p>
-                  <p className="text-2xl font-bold text-amber-900 mt-1">
-                    {money(data.cash_vs_credit.credit.total)}
-                  </p>
+                  <p className="text-2xl font-bold text-amber-900 mt-1">{money(data.cash_vs_credit.credit.total)}</p>
                   <p className="text-xs text-amber-700 mt-1">
                     {data.cash_vs_credit.credit.count} sale{data.cash_vs_credit.credit.count !== 1 && 's'}
                   </p>
                 </div>
                 <div className="p-4 rounded-lg bg-blue-50 border border-blue-100">
                   <p className="text-xs font-semibold text-blue-800 uppercase">Partial</p>
-                  <p className="text-2xl font-bold text-blue-900 mt-1">
-                    {money(data.cash_vs_credit.partial.total)}
-                  </p>
+                  <p className="text-2xl font-bold text-blue-900 mt-1">{money(data.cash_vs_credit.partial.total)}</p>
                   <p className="text-xs text-blue-700 mt-1">
                     {data.cash_vs_credit.partial.count} sale{data.cash_vs_credit.partial.count !== 1 && 's'}
                   </p>
@@ -127,7 +150,7 @@ export default function ReportsPage() {
           )}
 
           {/* Sales trend */}
-          {data.sales_trend.length > 0 && (
+          {data.sales_trend?.length > 0 && (
             <div className="card mb-6">
               <p className="card-title">Sales Trend</p>
               <div style={{ width: '100%', height: 260 }}>
@@ -145,7 +168,7 @@ export default function ReportsPage() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            {data.top_products.length > 0 && (
+            {data.top_products?.length > 0 && (
               <div className="card">
                 <p className="card-title">Top Products by Revenue</p>
                 <div style={{ width: '100%', height: 280 }}>
@@ -162,7 +185,7 @@ export default function ReportsPage() {
               </div>
             )}
 
-            {data.payment_mix.length > 0 && (
+            {data.payment_mix?.length > 0 && (
               <div className="card">
                 <p className="card-title">Payment Mix</p>
                 <div style={{ width: '100%', height: 280 }}>
@@ -186,8 +209,7 @@ export default function ReportsPage() {
               <table>
                 <thead>
                   <tr>
-                    <th>Customer</th>
-                    <th>Phone</th>
+                    <th>Customer</th><th>Phone</th>
                     <th className="text-right">Sales</th>
                     <th className="text-right">Total Spent</th>
                     <th className="text-right">Outstanding</th>
@@ -212,8 +234,69 @@ export default function ReportsPage() {
             </div>
           )}
 
+          {/* Returns section */}
+          {data.returns_by_type && (data.returns_by_type[0]?.total > 0 || data.returns_by_type[1]?.total > 0) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+              <div className="card">
+                <p className="card-title">Returns by Type</p>
+                <div style={{ width: '100%', height: 260 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={data.returns_by_type}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="type" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v) => money(v)} />
+                      <Bar dataKey="total" fill="#f59e0b" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {data.returns_by_product?.length > 0 && (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Product</th>
+                        <th className="text-right">Qty Returned</th>
+                        <th className="text-right">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.returns_by_product.map((p) => (
+                        <tr key={p.name}>
+                          <td className="font-medium">{p.name}</td>
+                          <td className="text-right">{p.qty}</td>
+                          <td className="text-right font-semibold">{money(p.total)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Expenses by category */}
+          {data.expenses_by_category?.length > 0 && (
+            <div className="card mb-6">
+              <p className="card-title">Expenses by Category</p>
+              <div style={{ width: '100%', height: 280 }}>
+                <ResponsiveContainer>
+                  <BarChart data={data.expenses_by_category} layout="vertical" margin={{ left: 10, right: 20 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis type="number" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="category" tick={{ fontSize: 11 }} width={140} />
+                    <Tooltip formatter={(v) => money(v)} />
+                    <Bar dataKey="total" fill="#ef4444" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
           {/* Stock by category */}
-          {data.stock_by_category.length > 0 && (
+          {data.stock_by_category?.length > 0 && (
             <div className="card mb-6">
               <p className="card-title">Stock Value by Category</p>
               <div style={{ width: '100%', height: 260 }}>
@@ -231,7 +314,7 @@ export default function ReportsPage() {
           )}
 
           {/* Top products table */}
-          {data.top_products.length > 0 && (
+          {data.top_products?.length > 0 && (
             <div className="table-wrap mb-6">
               <table>
                 <thead>
@@ -240,7 +323,7 @@ export default function ReportsPage() {
                     <th className="text-right">Qty Sold</th>
                     <th className="text-right">Revenue</th>
                     <th className="text-right">Cost</th>
-                    <th className="text-right">Profit</th>
+                    <th className="text-right">Gross Profit</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -270,6 +353,8 @@ export default function ReportsPage() {
             { key: 'stock', label: 'Stock Report' },
             { key: 'debts', label: 'Debts Report' },
             { key: 'profit', label: 'Profit Report' },
+            { key: 'expenses', label: 'Expenses Report' },
+            { key: 'returns', label: 'Returns Report' },
           ].map((r) => (
             <div key={r.key} className="flex items-center justify-between border border-slate-200 rounded-lg px-4 py-3">
               <span className="text-sm font-medium">{r.label}</span>

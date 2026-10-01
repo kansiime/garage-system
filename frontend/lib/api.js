@@ -17,6 +17,7 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401 && typeof window !== 'undefined') {
       localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
       if (window.location.pathname !== '/login') window.location.href = '/login';
     }
@@ -38,6 +39,7 @@ export const downloadFile = async (url, filename) => {
   document.body.appendChild(link);
   link.click();
   link.remove();
+  setTimeout(() => window.URL.revokeObjectURL(blobUrl), 1000);
 };
 
 export default api;

@@ -37,6 +37,8 @@ export default function Navbar() {
     { href: '/sales',          label: 'Sales',          icon: '💰' },
     { href: '/purchases',      label: 'Purchases',      icon: '🛒' },
     { href: '/debts',          label: 'Debts',          icon: '🧾' },
+    { href: '/expenses',       label: 'Expenses',       icon: '💸' },
+    { href: '/returns',        label: 'Returns',        icon: '↩️' },
     { href: '/reconciliation', label: 'Recon',          icon: '⚖️' },
     { href: '/reports',        label: 'Reports',        icon: '📈' },
     { href: '/suppliers',      label: 'Suppliers',      icon: '🏢' },
@@ -46,7 +48,7 @@ export default function Navbar() {
     ? [
         ...baseLinks,
         { href: '/users',    label: 'Users',    icon: '👥' },
-        { href: '/settings', label: 'Settings', icon: '⚙️' },
+        // { href: '/settings', label: 'Settings', icon: '⚙️' },
       ]
     : [
         ...baseLinks,

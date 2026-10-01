@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import api from '@/lib/api';
 import { formatMoney } from '@/lib/format';
@@ -14,8 +14,13 @@ export default function InventoryPage() {
     cost_price: '', selling_price: '', quantity: '', reorder_level: 5,
   });
   const [editing, setEditing] = useState(null);
-  const [stockModal, setStockModal] = useState(null); // { product, quantity, notes, type }
+  const [stockModal, setStockModal] = useState(null);
   const [error, setError] = useState('');
+
+  // --- Search + pagination state ---
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   const load = async () => {
     const [p, c, s, gs] = await Promise.all([
@@ -78,14 +83,42 @@ export default function InventoryPage() {
     load();
   };
 
+  // --- Search filter ---
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.category_name || '').toLowerCase().includes(q) ||
+        (p.supplier_name || '').toLowerCase().includes(q)
+    );
+  }, [products, search]);
+
+  // --- Pagination ---
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const startIndex = (safePage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const pageItems = filtered.slice(startIndex, endIndex);
+
+  // Reset to page 1 whenever the search changes
+  useEffect(() => { setPage(1); }, [search, pageSize]);
+
+  const goTo = (p) => setPage(Math.max(1, Math.min(totalPages, p)));
+
   return (
     <ProtectedRoute>
       <div className="mb-6 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Inventory</h1>
-          <p className="text-sm text-slate-500 mt-1">{products.length} product{products.length !== 1 && 's'}</p>
+          <p className="text-sm text-slate-500 mt-1">
+            {products.length} product{products.length !== 1 && 's'} total
+            {search && ` — ${filtered.length} match${filtered.length !== 1 ? 'es' : ''}`}
+          </p>
         </div>
-        <a href="/suppliers" className="btn btn-secondary">Manage Suppliers & Categories</a>
+        <a href="/suppliers" className="btn btn-secondary">🏢 Manage Suppliers & Categories</a>
       </div>
 
       {error && (
@@ -99,7 +132,7 @@ export default function InventoryPage() {
             <label>Product Name</label>
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
           </div>
-          <div>
+          <div className="md:col-span-2">
             <label>SKU / Code</label>
             <input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} required />
           </div>
@@ -128,7 +161,7 @@ export default function InventoryPage() {
               onChange={(e) => setForm({ ...form, selling_price: e.target.value })} required />
           </div>
           <div>
-            <label>Opening Qty {editing && <span className="text-slate-400 normal-case font-normal">(use Add Stock to change)</span>}</label>
+            <label>Opening Qty {editing && <span className="text-slate-400 normal-case font-normal">(use + Stock to change)</span>}</label>
             <input type="number" value={form.quantity}
               onChange={(e) => setForm({ ...form, quantity: e.target.value })}
               disabled={!!editing} />
@@ -147,9 +180,45 @@ export default function InventoryPage() {
                 cost_price: '', selling_price: '', quantity: '', reorder_level: 5 });
             }}>Cancel</button>
           )}
-          <button type="submit" className="btn btn-primary">{editing ? 'Update' : 'Add'} Product</button>
+          <button type="submit" className="btn btn-primary">{editing ? '✓ Update' : '+ Add'} Product</button>
         </div>
       </form>
+
+      {/* Search bar */}
+      <div className="card mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+          <div className="md:col-span-2">
+            <label>Search products</label>
+            <input
+              placeholder="Search by name, SKU, category, or supplier…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          <div>
+            <label>Show per page</label>
+            <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value))}>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
+          <div className="flex justify-end">
+            {search && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setSearch('')}
+              >
+                ✕ Clear search
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
 
       <div className="table-wrap overflow-x-auto">
         <table>
@@ -163,10 +232,14 @@ export default function InventoryPage() {
             </tr>
           </thead>
           <tbody>
-            {products.length === 0 && (
-              <tr><td colSpan={8} className="text-center text-slate-400 py-8">No products yet — add your first one above.</td></tr>
+            {pageItems.length === 0 && (
+              <tr>
+                <td colSpan={8} className="text-center text-slate-400 py-8">
+                  {search ? `No products match "${search}".` : 'No products yet — add your first one above.'}
+                </td>
+              </tr>
             )}
-            {products.map((p) => {
+            {pageItems.map((p) => {
               const low = p.quantity <= p.reorder_level;
               return (
                 <tr key={p.id} className={low ? 'bg-red-50/50' : ''}>
@@ -191,6 +264,83 @@ export default function InventoryPage() {
           </tbody>
         </table>
       </div>
+
+      {/* Pagination */}
+      {filtered.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 mt-4 mb-8">
+          <p className="text-sm text-slate-600">
+            Showing <b>{startIndex + 1}</b>–<b>{Math.min(endIndex, filtered.length)}</b> of{' '}
+            <b>{filtered.length}</b>
+          </p>
+          <div className="flex items-center gap-1">
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => goTo(1)}
+              disabled={safePage === 1}
+              title="First page"
+            >
+              «
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => goTo(safePage - 1)}
+              disabled={safePage === 1}
+            >
+              ← Previous
+            </button>
+
+            {/* Page number buttons — show up to 5 around the current page */}
+            {(() => {
+              const buttons = [];
+              const window = 2;
+              const from = Math.max(1, safePage - window);
+              const to = Math.min(totalPages, safePage + window);
+              if (from > 1) {
+                buttons.push(
+                  <button key={1} className="btn btn-secondary btn-sm" onClick={() => goTo(1)}>1</button>
+                );
+                if (from > 2) buttons.push(<span key="lead-ellipsis" className="px-2 text-slate-400">…</span>);
+              }
+              for (let i = from; i <= to; i++) {
+                buttons.push(
+                  <button
+                    key={i}
+                    className={i === safePage ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'}
+                    onClick={() => goTo(i)}
+                  >
+                    {i}
+                  </button>
+                );
+              }
+              if (to < totalPages) {
+                if (to < totalPages - 1) buttons.push(<span key="trail-ellipsis" className="px-2 text-slate-400">…</span>);
+                buttons.push(
+                  <button key={totalPages} className="btn btn-secondary btn-sm" onClick={() => goTo(totalPages)}>
+                    {totalPages}
+                  </button>
+                );
+              }
+              return buttons;
+            })()}
+
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => goTo(safePage + 1)}
+              disabled={safePage === totalPages}
+            >
+              Next →
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => goTo(totalPages)}
+              disabled={safePage === totalPages}
+              title="Last page"
+            >
+              »
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Stock Adjustment Modal */}
       {stockModal && (
