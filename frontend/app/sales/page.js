@@ -50,14 +50,27 @@ export default function SalesPage() {
   };
   const total = items.reduce((s, i) => s + (i.quantity || 0) * (i.unit_price || 0), 0);
 
+  // Auto-fill amount_paid based on payment type
+  useEffect(() => {
+    if (form.payment_type === 'cash') {
+      setForm((f) => ({ ...f, amount_paid: total.toString() }));
+    } else if (form.payment_type === 'credit') {
+      setForm((f) => ({ ...f, amount_paid: '0' }));
+    }
+    // eslint-disable-next-line
+  }, [form.payment_type, total]);
+
   const generateRef = () => {
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     return `SL-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
   };
+
   const resetForm = () => {
-    setForm({ reference: generateRef(), customer_name: '', customer_phone: '',
-      payment_type: 'cash', amount_paid: '', notes: '' });
+    setForm({
+      reference: generateRef(), customer_name: '', customer_phone: '',
+      payment_type: 'cash', amount_paid: '', notes: '',
+    });
     setItems([{ product: '', quantity: 1, unit_price: 0 }]);
   };
   useEffect(() => { resetForm(); }, []);
@@ -69,11 +82,25 @@ export default function SalesPage() {
       setError('Please pick a product and quantity for every line.');
       return;
     }
+    const paid = parseFloat(form.amount_paid || 0);
+    if (form.payment_type === 'cash' && paid < total) {
+      setError(`Cash sales must be fully paid. Total is ${money(total)}, amount paid is ${money(paid)}.`);
+      return;
+    }
+    if (form.payment_type === 'credit' && paid > 0) {
+      setError('Credit sales should have Amount Paid = 0. Use Partial for part payments.');
+      return;
+    }
+    if (form.payment_type === 'partial' && (paid <= 0 || paid >= total)) {
+      setError('Partial payments must be greater than 0 and less than the total.');
+      return;
+    }
+
     setSaving(true);
     try {
       await api.post('/sales/', {
         ...form,
-        amount_paid: parseFloat(form.amount_paid || 0),
+        amount_paid: paid,
         items: items.map((i) => ({
           product: parseInt(i.product),
           quantity: parseInt(i.quantity),
@@ -108,9 +135,15 @@ export default function SalesPage() {
     const q = search.trim().toLowerCase();
     return sales.filter((s) => {
       if (filterPayment !== 'all' && s.payment_type !== filterPayment) return false;
-      const balance = parseFloat(s.balance || 0);
-      const status = balance <= 0 ? 'paid' : (parseFloat(s.amount_paid) > 0 ? 'partial' : 'unpaid');
-      if (filterStatus !== 'all' && status !== filterStatus) return false;
+      // Determine LIVE status
+      const debtBal = parseFloat(s.debt_balance || 0);
+      const liveStatus =
+        s.debt_status === 'paid' || (debtBal <= 0)
+          ? 'paid'
+          : s.debt_status === 'partial'
+            ? 'partial'
+            : 'unpaid';
+      if (filterStatus !== 'all' && liveStatus !== filterStatus) return false;
       if (!q) return true;
       return (
         (s.reference || '').toLowerCase().includes(q) ||
@@ -148,7 +181,7 @@ export default function SalesPage() {
               onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /></div>
           <div><label>Payment Type</label>
             <select value={form.payment_type} onChange={(e) => setForm({ ...form, payment_type: e.target.value })}>
-              <option value="cash">Cash</option>
+              <option value="cash">Cash (full payment)</option>
               <option value="credit">Credit (unpaid)</option>
               <option value="partial">Partial (some paid)</option>
             </select></div>
@@ -267,8 +300,19 @@ export default function SalesPage() {
               </td></tr>
             )}
             {pg.pageItems.map((s) => {
-              const balance = parseFloat(s.balance || 0);
-              const status = balance <= 0 ? 'paid' : (parseFloat(s.amount_paid) > 0 ? 'partial' : 'unpaid');
+              // LIVE status driven by the linked debt
+              const debtBal = parseFloat(s.debt_balance || 0);
+              let liveStatus;
+              if (s.debt_status === 'paid' || (debtBal === 0 && parseFloat(s.balance) > 0 && s.debt_status === 'settled')) {
+                liveStatus = 'paid';
+              } else if (debtBal > 0 && s.debt_status === 'partial') {
+                liveStatus = 'partial';
+              } else if (debtBal > 0) {
+                liveStatus = 'unpaid';
+              } else {
+                liveStatus = 'paid';
+              }
+
               return (
                 <tr key={s.id}>
                   <td className="font-mono text-xs">{s.reference}</td>
@@ -277,16 +321,23 @@ export default function SalesPage() {
                   <td className="capitalize">{s.payment_type}</td>
                   <td className="text-right font-medium">{money(s.total_amount)}</td>
                   <td className="text-right">{money(s.amount_paid)}</td>
-                  <td className={`text-right ${balance > 0 ? 'text-red-600 font-semibold' : ''}`}>{money(balance)}</td>
-                  <td><span className={badgeClass(status)}>{status}</span></td>
+                  <td className={`text-right ${parseFloat(s.balance) > 0 ? 'text-red-600 font-semibold' : ''}`}>
+                    {money(s.balance)}
+                  </td>
+                  <td><span className={badgeClass(liveStatus)}>{liveStatus}</span></td>
                   <td>
-                    {balance > 0 ? (
+                    {debtBal > 0 ? (
                       <Link href={`/debts?search=${encodeURIComponent(s.reference)}`}
-                        className="badge badge-red hover:bg-red-200">{money(balance)} owed</Link>
-                    ) : (<span className="badge badge-green">settled</span>)}
+                        className="badge badge-red hover:bg-red-200">
+                        {money(debtBal)} owed
+                      </Link>
+                    ) : (
+                      <span className="badge badge-green">settled</span>
+                    )}
                   </td>
                   <td className="text-right whitespace-nowrap">
-                    <button className="btn btn-secondary btn-sm" onClick={() => printReceipt(s.id)}>🧾 Receipt</button>
+                    <button className="btn btn-secondary btn-sm"
+                      onClick={() => printReceipt(s.id)}>🧾 Receipt</button>
                   </td>
                 </tr>
               );
@@ -295,11 +346,9 @@ export default function SalesPage() {
         </table>
       </div>
 
-      <Pagination
-        page={pg.page} totalPages={pg.totalPages} goTo={pg.setPage}
+      <Pagination page={pg.page} totalPages={pg.totalPages} goTo={pg.setPage}
         startIndex={pg.startIndex} endIndex={pg.endIndex}
-        totalItems={filtered.length} label="sales"
-      />
+        totalItems={filtered.length} label="sales" />
     </ProtectedRoute>
   );
 }

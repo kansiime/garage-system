@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from django.db import transaction
+from decimal import Decimal
+
 from .models import Sale, SaleItem
 from apps.inventory.models import StockMovement
 
@@ -20,16 +22,44 @@ class SaleSerializer(serializers.ModelSerializer):
     items = SaleItemSerializer(many=True)
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
 
+    # Live debt info (joined via reference)
+    debt_balance = serializers.SerializerMethodField()
+    debt_status = serializers.SerializerMethodField()
+
     class Meta:
         model = Sale
-        fields = ['id', 'reference', 'customer_name', 'customer_phone',
-                  'payment_type', 'total_amount', 'amount_paid', 'balance',
-                  'notes', 'items', 'created_at']
+        fields = [
+            'id', 'reference', 'customer_name', 'customer_phone',
+            'payment_type', 'total_amount', 'amount_paid', 'balance',
+            'debt_balance', 'debt_status',
+            'notes', 'items', 'created_at',
+        ]
         read_only_fields = ['user', 'created_at']
+
+    def get_debt_balance(self, obj):
+        from apps.debts.models import Debt
+        debt = Debt.objects.filter(
+            reference=obj.reference, debt_type='receivable'
+        ).first()
+        if not debt:
+            return 0
+        return float(debt.balance)
+
+    def get_debt_status(self, obj):
+        from apps.debts.models import Debt
+        debt = Debt.objects.filter(
+            reference=obj.reference, debt_type='receivable'
+        ).first()
+        if not debt:
+            return 'settled'
+        return debt.status
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
-        total = sum(i['quantity'] * i['unit_price'] for i in items_data)
+        total = sum(
+            (Decimal(i['quantity']) * Decimal(i['unit_price']) for i in items_data),
+            Decimal('0'),
+        )
         with transaction.atomic():
             sale = Sale.objects.create(total_amount=total, **validated_data)
             for item in items_data:
@@ -37,7 +67,7 @@ class SaleSerializer(serializers.ModelSerializer):
                 SaleItem.objects.create(
                     sale=sale,
                     cost_price=product.cost_price,
-                    **item
+                    **item,
                 )
                 # Reduce stock
                 product.quantity -= item['quantity']
@@ -45,34 +75,36 @@ class SaleSerializer(serializers.ModelSerializer):
                 StockMovement.objects.create(
                     product=product, movement_type='out',
                     quantity=item['quantity'], reference=sale.reference,
-                    user=sale.user
+                    user=sale.user,
                 )
         return sale
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', None)
-        # Restore old stock
+
+        # Restore old stock before rewriting items
         for old_item in instance.items.all():
             product = old_item.product
             product.quantity += old_item.quantity
             product.save()
         instance.items.all().delete()
 
+        # Apply non-item fields
         for k, v in validated_data.items():
             setattr(instance, k, v)
 
-        total = 0
+        total = Decimal('0')
         if items_data is not None:
             for item in items_data:
                 product = item['product']
                 SaleItem.objects.create(
                     sale=instance,
                     cost_price=product.cost_price,
-                    **item
+                    **item,
                 )
                 product.quantity -= item['quantity']
                 product.save()
-                total += item['quantity'] * item['unit_price']
+                total += Decimal(item['quantity']) * Decimal(item['unit_price'])
             instance.total_amount = total
         instance.save()
         return instance
