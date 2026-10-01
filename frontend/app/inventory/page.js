@@ -5,10 +5,26 @@ import api from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { useUser, can } from '@/lib/useUser';
 
+function slugify(text) {
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function generateSKU(name) {
+  if (!name) return '';
+  const base = slugify(name).slice(0, 20);
+  // Short numeric suffix so duplicates don't collide
+  const suffix = Date.now().toString().slice(-4);
+  return `${base}-${suffix}`.toUpperCase();
+}
+
 export default function InventoryPage() {
   const user = useUser();
-  const canManage = can.viewInventoryCost(user);   // admin, manager, storekeeper
-  const canReconcile = can.reconcile(user);        // admin only
+  const canManage = can.viewInventoryCost(user);
 
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -19,10 +35,10 @@ export default function InventoryPage() {
     cost_price: '', selling_price: '', quantity: '', reorder_level: 5,
   });
   const [editing, setEditing] = useState(null);
+  const [skuTouched, setSkuTouched] = useState(false);  // user manually edited sku
   const [stockModal, setStockModal] = useState(null);
   const [error, setError] = useState('');
 
-  // Search + pagination
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -32,7 +48,6 @@ export default function InventoryPage() {
       api.get('/inventory/products/'),
       api.get('/auth/settings/'),
     ];
-    // Only fetch categories/suppliers if user can manage — cashier doesn't need them
     if (canManage) {
       requests.push(api.get('/inventory/categories/'));
       requests.push(api.get('/inventory/suppliers/'));
@@ -45,6 +60,23 @@ export default function InventoryPage() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [user]);
 
+  // Auto-generate SKU from the product name when the user types it,
+  // as long as the user hasn't manually edited the SKU field.
+  const handleNameChange = (value) => {
+    setForm((f) => {
+      const next = { ...f, name: value };
+      if (!editing && !skuTouched) {
+        next.sku = generateSKU(value);
+      }
+      return next;
+    });
+  };
+
+  const handleSkuChange = (value) => {
+    setSkuTouched(true);
+    setForm((f) => ({ ...f, sku: value }));
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     setError('');
@@ -54,9 +86,15 @@ export default function InventoryPage() {
       setForm({ name: '', sku: '', category: '', supplier: '', cost_price: '',
         selling_price: '', quantity: '', reorder_level: 5 });
       setEditing(null);
+      setSkuTouched(false);
       load();
     } catch (err) {
-      setError(err.response?.data?.sku?.[0] || 'Could not save product.');
+      const d = err.response?.data;
+      setError(
+        d?.sku?.[0] ||
+        d?.name?.[0] ||
+        (typeof d === 'object' ? JSON.stringify(d) : 'Could not save product.')
+      );
     }
   };
 
@@ -68,6 +106,7 @@ export default function InventoryPage() {
 
   const edit = (p) => {
     setEditing(p.id);
+    setSkuTouched(true);  // don't overwrite an existing SKU
     setForm({
       name: p.name, sku: p.sku,
       category: p.category || '', supplier: p.supplier || '',
@@ -113,7 +152,6 @@ export default function InventoryPage() {
   const pageItems = filtered.slice(startIndex, endIndex);
 
   useEffect(() => { setPage(1); }, [search, pageSize]);
-
   const goTo = (p) => setPage(Math.max(1, Math.min(totalPages, p)));
 
   return (
@@ -132,23 +170,37 @@ export default function InventoryPage() {
       </div>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">
-          {error}
-        </div>
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">{error}</div>
       )}
 
-      {/* Add/Edit Product form — only for admin/manager/storekeeper */}
       {canManage && (
         <form onSubmit={submit} className="card mb-6">
           <p className="card-title">{editing ? 'Edit Product' : 'Add Product'}</p>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <div className="md:col-span-2">
               <label>Product Name</label>
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <input
+                value={form.name}
+                onChange={(e) => handleNameChange(e.target.value)}
+                placeholder="e.g. Clutch cable"
+                required
+              />
             </div>
             <div className="md:col-span-2">
-              <label>SKU / Code</label>
-              <input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} required />
+              <label>
+                SKU / Code
+                {!editing && !skuTouched && (
+                  <span className="ml-2 text-slate-400 normal-case font-normal">
+                    (auto-generated — edit to override)
+                  </span>
+                )}
+              </label>
+              <input
+                value={form.sku}
+                onChange={(e) => handleSkuChange(e.target.value)}
+                placeholder="Auto-generated from name"
+                required
+              />
             </div>
             <div>
               <label>Category</label>
@@ -190,6 +242,7 @@ export default function InventoryPage() {
             {editing && (
               <button type="button" className="btn btn-secondary" onClick={() => {
                 setEditing(null);
+                setSkuTouched(false);
                 setForm({ name: '', sku: '', category: '', supplier: '',
                   cost_price: '', selling_price: '', quantity: '', reorder_level: 5 });
               }}>Cancel</button>
@@ -199,7 +252,6 @@ export default function InventoryPage() {
         </form>
       )}
 
-      {/* Search + per-page */}
       <div className="card mb-4">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
           <div className="md:col-span-2">
@@ -219,9 +271,7 @@ export default function InventoryPage() {
           </div>
           <div className="flex justify-end">
             {search && (
-              <button type="button" className="btn btn-secondary" onClick={() => setSearch('')}>
-                ✕ Clear search
-              </button>
+              <button type="button" className="btn btn-secondary" onClick={() => setSearch('')}>✕ Clear search</button>
             )}
           </div>
         </div>
