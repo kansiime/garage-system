@@ -796,3 +796,136 @@ def customer_detail(request, key):
             for p in payments[:100]
         ],
     })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def product_movement(request):
+    """
+    Stock velocity report.
+    Returns fast-movers, slow-movers, and dead-stock for a given period.
+    """
+    start, end = _range_from_params(request)
+    shop = GarageSettings.load()
+    currency = shop.currency_symbol or shop.currency_code or 'UGX'
+
+    # All sales in the period
+    sales_qs = _filter_by_local_date(Sale.objects.all(), start, end)
+    items = SaleItem.objects.filter(sale__in=sales_qs).select_related('product')
+
+    # Aggregate per product: quantity sold, revenue, cost, last sold date
+    product_stats = {}   # product_id -> dict
+    for item in items:
+        pid = item.product_id
+        if pid not in product_stats:
+            product_stats[pid] = {
+                'id': pid,
+                'name': item.product.name,
+                'sku': item.product.sku,
+                'qty_sold': 0,
+                'revenue': Decimal('0'),
+                'cost': Decimal('0'),
+                'last_sold': item.sale.created_at,
+            }
+        product_stats[pid]['qty_sold'] += item.quantity
+        product_stats[pid]['revenue'] += item.quantity * item.unit_price
+        product_stats[pid]['cost'] += item.quantity * item.cost_price
+        if item.sale.created_at > product_stats[pid]['last_sold']:
+            product_stats[pid]['last_sold'] = item.sale.created_at
+
+    # All products (including those with no sales this period = dead stock)
+    all_products = list(Product.objects.all())
+    product_ids_with_sales = set(product_stats.keys())
+
+    # Compute "days since last sold" globally — for dead stock, use the product's
+    # last ever sale (or its creation date if never sold)
+    last_ever_sold = {}
+    for item in SaleItem.objects.select_related('sale').order_by('-sale__created_at'):
+        if item.product_id not in last_ever_sold:
+            last_ever_sold[item.product_id] = item.sale.created_at
+
+    today = _local_today()
+
+    def days_since(dt):
+        if not dt:
+            return None
+        return (today - timezone.localtime(dt).date()).days
+
+    # Build movement rows
+    movers = []
+    for p in all_products:
+        stat = product_stats.get(p.id)
+        if stat:
+            qty = stat['qty_sold']
+            revenue = stat['revenue']
+            cost = stat['cost']
+            last_sold = stat['last_sold']
+        else:
+            qty = 0
+            revenue = Decimal('0')
+            cost = Decimal('0')
+            last_sold = last_ever_sold.get(p.id)
+
+        movers.append({
+            'id': p.id,
+            'name': p.name,
+            'sku': p.sku,
+            'category': p.category.name if p.category else None,
+            'qty_sold': qty,
+            'revenue': float(revenue),
+            'profit': float(revenue - cost),
+            'current_stock': p.quantity,
+            'reorder_level': p.reorder_level,
+            'stock_value': float(p.stock_value),
+            'last_sold': timezone.localtime(last_sold).strftime('%Y-%m-%d') if last_sold else None,
+            'days_since_last_sale': days_since(last_sold),
+            'status': (
+                'dead' if qty == 0
+                else 'fast' if qty >= 10  # rough heuristic — tune per business
+                else 'normal'
+            ),
+        })
+
+    # Fast movers — sort by qty desc, top 10
+    fast_movers = sorted(
+        [m for m in movers if m['qty_sold'] > 0],
+        key=lambda m: m['qty_sold'],
+        reverse=True,
+    )[:10]
+
+    # Slow movers — sort by qty asc (but with at least 1 sale)
+    slow_movers = sorted(
+        [m for m in movers if m['qty_sold'] > 0],
+        key=lambda m: m['qty_sold'],
+    )[:10]
+
+    # Dead stock — zero sales in period
+    dead_stock = sorted(
+        [m for m in movers if m['qty_sold'] == 0],
+        key=lambda m: m['stock_value'],
+        reverse=True,
+    )[:20]
+
+    # Summary KPIs
+    total_products = len(movers)
+    active_products = len(product_ids_with_sales)
+    dead_count = total_products - active_products
+    total_dead_value = sum(
+        m['stock_value'] for m in movers if m['qty_sold'] == 0
+    )
+
+    return Response({
+        'business_name': shop.name,
+        'currency': currency,
+        'period': {'start': str(start), 'end': str(end)},
+        'summary': {
+            'total_products': total_products,
+            'active_products': active_products,
+            'dead_products': dead_count,
+            'dead_stock_value': float(total_dead_value),
+        },
+        'fast_movers': fast_movers,
+        'slow_movers': slow_movers,
+        'dead_stock': dead_stock,
+        'all_products': movers,
+    })

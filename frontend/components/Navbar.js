@@ -57,6 +57,7 @@ export default function Navbar() {
     { href: '/returns',        label: 'Returns',   icon: '↩️', show: can.createReturns(user) || can.editDebts(user) },
     { href: '/reconciliation', label: 'Recon',     icon: '⚖️', show: can.reconcile(user) },
     { href: '/reports',        label: 'Reports',   icon: '📈', show: can.editDebts(user) || can.viewExpenses(user) },
+    { href: '/product-movement', label: 'Movement', icon: '📈', show: can.viewExpenses(user) },
     { href: '/suppliers',      label: 'Suppliers', icon: '🏢', show: can.viewSuppliers(user) },
     { href: '/users',          label: 'Users',     icon: '🔐', show: can.manageUsers(user) },
     // { href: '/settings',       label: 'Settings',  icon: '⚙️', show: true },

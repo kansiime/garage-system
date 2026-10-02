@@ -14,4 +14,5 @@ urlpatterns = [
     path('returns/', views.returns_report),
     path('customers/', views.customers_list),           # ← new
     path('customers/<str:key>/', views.customer_detail), # ← new
+    path('product-movement/', views.product_movement),
 ]
