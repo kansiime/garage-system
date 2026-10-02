@@ -12,4 +12,6 @@ urlpatterns = [
     path('profit/', views.profit_report),
     path('expenses/', views.expenses_report),
     path('returns/', views.returns_report),
+    path('customers/', views.customers_list),           # ← new
+    path('customers/<str:key>/', views.customer_detail), # ← new
 ]

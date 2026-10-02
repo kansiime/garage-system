@@ -544,3 +544,255 @@ def returns_report(request):
                'Purchase Returns': purchase_returns.count(),
                'Purchase Returns Value': float(purchase_returns.aggregate(t=Sum('total_amount'))['t'] or Decimal('0'))}
     return _respond(request, f"Returns Report ({start} to {end})", headers, rows, summary)
+
+
+
+# ---------------------------------------------------------------------------
+# Customer detail (derived from existing Sales and Debts)
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def customers_list(request):
+    """
+    Returns a list of customers derived from existing Sales and Debts.
+    Grouped by phone (if present), otherwise by lowercased name.
+    Sales with no name AND no phone are all grouped under 'walk-in'.
+    Auto-generated debt labels like 'Customer (SL-...)' also fold into walk-in.
+    """
+    search = (request.query_params.get('search') or '').strip().lower()
+
+    customers = {}  # key -> dict
+
+    def _make_key(name, phone):
+        n = (name or '').strip()
+        p = (phone or '').strip()
+        # Sales with no customer info → walk-in
+        if not n and not p:
+            return 'walk-in'
+        # Auto-generated debt labels → walk-in
+        if n.startswith('Customer (SL-') or n.startswith('Customer (PO-'):
+            return 'walk-in'
+        # Otherwise phone is preferred, name is fallback
+        return p if p else n.lower()
+
+    def _display_name(name, phone, key):
+        n = (name or '').strip()
+        if key == 'walk-in':
+            return 'Walk-in'
+        return n or 'Customer'
+
+    # 1. Group sales
+    for s in Sale.objects.all().order_by('-created_at'):
+        key = _make_key(s.customer_name, s.customer_phone)
+        if key not in customers:
+            customers[key] = {
+                'key': key,
+                'name': _display_name(s.customer_name, s.customer_phone, key),
+                'phone': (s.customer_phone or '').strip(),
+                'sale_count': 0,
+                'total_spent': Decimal('0'),
+                'balance': Decimal('0'),
+                'last_visit': s.created_at,
+                'first_visit': s.created_at,
+            }
+        customers[key]['sale_count'] += 1
+        customers[key]['total_spent'] += s.total_amount
+        customers[key]['balance'] += s.balance
+        if s.created_at > customers[key]['last_visit']:
+            customers[key]['last_visit'] = s.created_at
+            if s.customer_name:
+                customers[key]['name'] = _display_name(s.customer_name, s.customer_phone, key)
+            if s.customer_phone:
+                customers[key]['phone'] = s.customer_phone.strip()
+        if s.created_at < customers[key]['first_visit']:
+            customers[key]['first_visit'] = s.created_at
+
+    # 2. Merge in receivable debts not already covered
+    for d in Debt.objects.filter(debt_type='receivable'):
+        key = _make_key(d.party_name, d.party_phone)
+        if key not in customers:
+            customers[key] = {
+                'key': key,
+                'name': _display_name(d.party_name, d.party_phone, key),
+                'phone': (d.party_phone or '').strip(),
+                'sale_count': 0,
+                'total_spent': Decimal('0'),
+                'balance': Decimal('0'),
+                'last_visit': d.created_at,
+                'first_visit': d.created_at,
+            }
+        customers[key]['balance'] += d.balance
+        if d.created_at > customers[key]['last_visit']:
+            customers[key]['last_visit'] = d.created_at
+
+    # 3. Search filter
+    items = list(customers.values())
+    if search:
+        items = [
+            c for c in items
+            if search in c['name'].lower()
+            or search in (c['phone'] or '').lower()
+        ]
+
+    # 4. Sort by most recent activity
+    items.sort(key=lambda c: c['last_visit'], reverse=True)
+
+    data = [
+        {
+            'key': c['key'],
+            'name': c['name'],
+            'phone': c['phone'],
+            'sale_count': c['sale_count'],
+            'total_spent': float(c['total_spent']),
+            'balance': float(c['balance']),
+            'last_visit': timezone.localtime(c['last_visit']).strftime('%Y-%m-%d %H:%M'),
+            'first_visit': timezone.localtime(c['first_visit']).strftime('%Y-%m-%d'),
+        }
+        for c in items
+    ]
+
+    shop = GarageSettings.load()
+    return Response({
+        'customers': data,
+        'count': len(data),
+        'currency': shop.currency_symbol or shop.currency_code or 'UGX',
+    })
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def customer_detail(request, key):
+    """
+    Full detail for one customer.
+    `key` is either:
+      - 'walk-in' (customers with no name AND no phone, plus auto-generated labels)
+      - a phone number (matched exactly)
+      - the lowercased customer name
+    """
+    key_lower = (key or '').lower().strip()
+
+    def _matches(name, phone):
+        n = (name or '').strip()
+        p = (phone or '').strip()
+        n_lower = n.lower()
+
+        if key_lower == 'walk-in':
+            # Match if no name AND no phone
+            if not n and not p:
+                return True
+            # Also match auto-generated debt labels
+            if n.startswith('Customer (SL-') or n.startswith('Customer (PO-)'):
+                return True
+            return False
+
+        # Match by phone (preferred)
+        if p and p.lower() == key_lower:
+            return True
+
+        # Match by exact lowercased name
+        if n_lower and n_lower == key_lower:
+            return True
+
+        return False
+
+    # Gather all matching sales and debts
+    sales = [
+        s for s in Sale.objects.all().order_by('-created_at')
+        if _matches(s.customer_name, s.customer_phone)
+    ]
+    debts = [
+        d for d in Debt.objects.filter(debt_type='receivable').order_by('-created_at')
+        if _matches(d.party_name, d.party_phone)
+    ]
+
+    # Payments across those debts
+    payments = []
+    for d in debts:
+        payments.extend(d.payments.all().order_by('-created_at'))
+    payments.sort(key=lambda p: p.created_at, reverse=True)
+
+    total_spent = sum((s.total_amount for s in sales), Decimal('0'))
+    total_paid_on_debts = sum((p.amount for p in payments), Decimal('0'))
+    outstanding = sum((d.balance for d in debts), Decimal('0'))
+
+    # Display name + phone
+    if key_lower == 'walk-in':
+        display_name = 'Walk-in'
+        display_phone = ''
+    else:
+        # Prefer the most recent sale's name/phone
+        display_name = ''
+        for s in sales:
+            if s.customer_name:
+                display_name = s.customer_name.strip()
+                break
+        if not display_name:
+            for d in debts:
+                if d.party_name and not d.party_name.startswith('Customer ('):
+                    display_name = d.party_name.strip()
+                    break
+        if not display_name:
+            display_name = 'Customer'
+
+        display_phone = ''
+        for s in sales:
+            if s.customer_phone:
+                display_phone = s.customer_phone.strip()
+                break
+        if not display_phone:
+            for d in debts:
+                if d.party_phone:
+                    display_phone = d.party_phone.strip()
+                    break
+
+    shop = GarageSettings.load()
+
+    return Response({
+        'name': display_name,
+        'phone': display_phone,
+        'currency': shop.currency_symbol or shop.currency_code or 'UGX',
+        'summary': {
+            'sale_count': len(sales),
+            'total_spent': float(total_spent),
+            'outstanding': float(outstanding),
+            'total_paid_on_debts': float(total_paid_on_debts),
+        },
+        'sales': [
+            {
+                'id': s.id,
+                'reference': s.reference,
+                'date': timezone.localtime(s.created_at).strftime('%Y-%m-%d %H:%M'),
+                'total': float(s.total_amount),
+                'paid': float(s.amount_paid),
+                'balance': float(s.balance),
+                'payment_type': s.payment_type,
+            }
+            for s in sales[:100]
+        ],
+        'debts': [
+            {
+                'id': d.id,
+                'type': d.debt_type,
+                'amount': float(d.amount),
+                'paid': float(d.amount_paid),
+                'balance': float(d.balance),
+                'status': d.status,
+                'reference': d.reference or '',
+                'notes': d.notes or '',
+                'promised_date': d.promised_date.strftime('%Y-%m-%d') if d.promised_date else None,
+                'promise_status': d.promise_status,
+                'created_at': timezone.localtime(d.created_at).strftime('%Y-%m-%d'),
+            }
+            for d in debts
+        ],
+        'payments': [
+            {
+                'id': p.id,
+                'amount': float(p.amount),
+                'notes': p.notes or '',
+                'date': timezone.localtime(p.created_at).strftime('%Y-%m-%d %H:%M'),
+                'debt_id': p.debt_id,
+            }
+            for p in payments[:100]
+        ],
+    })

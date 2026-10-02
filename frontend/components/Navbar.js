@@ -49,6 +49,7 @@ export default function Navbar() {
     { href: '/sales',      label: 'Sales',      icon: '💰' },
     { href: '/purchases',  label: 'Purchases',  icon: '🛒' },
     { href: '/debts',      label: 'Debts',      icon: '🧾', badge: dueCount },
+    { href: '/customers',  label: 'Customers',  icon: '👥' },
   ];
 
   const optional = [
@@ -57,8 +58,8 @@ export default function Navbar() {
     { href: '/reconciliation', label: 'Recon',     icon: '⚖️', show: can.reconcile(user) },
     { href: '/reports',        label: 'Reports',   icon: '📈', show: can.editDebts(user) || can.viewExpenses(user) },
     { href: '/suppliers',      label: 'Suppliers', icon: '🏢', show: can.viewSuppliers(user) },
-    { href: '/users',          label: 'Users',     icon: '👥', show: can.manageUsers(user) },
-    { href: '/settings',       label: 'Settings',  icon: '⚙️', show: true },
+    { href: '/users',          label: 'Users',     icon: '🔐', show: can.manageUsers(user) },
+    // { href: '/settings',       label: 'Settings',  icon: '⚙️', show: true },
   ];
 
   const links = [...baseLinks, ...optional.filter((l) => l.show)];
