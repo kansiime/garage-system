@@ -130,7 +130,7 @@ export default function Dashboard() {
                   Restock →
                 </Link>
               </div>
-              <div className="table-wrap">
+              <div className="table-scroll">
                 <table>
                   <thead>
                     <tr>

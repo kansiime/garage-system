@@ -200,7 +200,7 @@ export default function SuppliersPage() {
             )}
           </div>
 
-          <div className="table-wrap overflow-x-auto">
+          <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -301,7 +301,7 @@ export default function SuppliersPage() {
             )}
           </div>
 
-          <div className="table-wrap overflow-x-auto">
+          <div className="table-scroll">
             <table>
               <thead>
                 <tr>

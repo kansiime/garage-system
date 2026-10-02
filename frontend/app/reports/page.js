@@ -253,7 +253,7 @@ export default function ReportsPage() {
               </div>
 
               {data.returns_by_product?.length > 0 && (
-                <div className="table-wrap">
+                <div className="table-scroll">
                   <table>
                     <thead>
                       <tr>

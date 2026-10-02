@@ -92,7 +92,7 @@ export default function CustomersPage() {
 
       {loading && <p className="text-sm text-slate-500 mb-4">Loading customers…</p>}
 
-      <div className="table-wrap overflow-x-auto">
+      <div className="table-scroll">
         <table>
           <thead>
             <tr>

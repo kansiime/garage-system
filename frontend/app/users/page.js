@@ -137,7 +137,7 @@ export default function UsersPage() {
             </div>
           </form>
 
-          <div className="table-wrap overflow-x-auto">
+          <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -239,7 +239,7 @@ function AuditLog() {
         </div>
       </div>
 
-      <div className="table-wrap overflow-x-auto">
+      <div className="table-scroll">
         <table>
           <thead>
             <tr>

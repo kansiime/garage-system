@@ -101,7 +101,7 @@ export default function CustomerDetailPage() {
         {data.debts.length === 0 ? (
           <p className="text-sm text-slate-400">No debts — all paid up.</p>
         ) : (
-          <div className="table-wrap overflow-x-auto">
+          <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -154,7 +154,7 @@ export default function CustomerDetailPage() {
       {data.payments.length > 0 && (
         <div className="card mb-6">
           <p className="card-title">Payment History ({data.payments.length})</p>
-          <div className="table-wrap overflow-x-auto">
+          <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -183,7 +183,7 @@ export default function CustomerDetailPage() {
         {data.sales.length === 0 ? (
           <p className="text-sm text-slate-400">No sales recorded.</p>
         ) : (
-          <div className="table-wrap overflow-x-auto">
+          <div className="table-scroll">
             <table>
               <thead>
                 <tr>
