@@ -326,3 +326,125 @@ textarea:disabled {
   background-color: #f1f5f9 !important;
   color: #94a3b8 !important;
 }
+
+
+
+/* ============================================================
+   RESPONSIVE TABLES — mobile turns rows into cards
+   ============================================================ */
+@media (max-width: 768px) {
+  /* Container: horizontal scroll off, give breathing room */
+  .table-wrap {
+    border-radius: 0.75rem;
+    overflow: visible;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+  }
+
+  /* Table becomes a stack of blocks */
+  .table-wrap table,
+  .table-wrap thead,
+  .table-wrap tbody,
+  .table-wrap tr,
+  .table-wrap td {
+    display: block;
+    width: 100%;
+  }
+
+  /* Hide the header row on mobile — labels come from each cell */
+  .table-wrap thead {
+    position: absolute;
+    width: 1px; height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  /* Each row becomes a card */
+  .table-wrap tr {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.75rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+
+  /* Each cell becomes a row with the label on the left */
+  .table-wrap td {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 0.4rem 0 !important;
+    border-bottom: 1px dashed #f1f5f9;
+    text-align: right !important;
+    word-break: break-word;
+  }
+
+  .table-wrap td:last-child {
+    border-bottom: none;
+    padding-top: 0.75rem !important;
+  }
+
+  /* Automatic label from data-label attribute */
+  .table-wrap td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #64748b;
+    text-align: left;
+    max-width: 45%;
+  }
+
+  /* Full-width cells that shouldn't be right-aligned */
+  .table-wrap td[data-full] {
+    display: block;
+    text-align: left !important;
+  }
+  .table-wrap td[data-full]::before {
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+
+  /* Buttons/actions: stack full width */
+  .table-wrap td:last-child button,
+  .table-wrap td:last-child a.btn {
+    flex: 1;
+    margin-right: 0 !important;
+    margin-left: 0 !important;
+  }
+  .table-wrap td:last-child {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .table-wrap td:last-child::before {
+    flex-basis: 100%;
+  }
+}
+
+/* ============================================================
+   Mobile-friendly cards + stat tiles
+   ============================================================ */
+@media (max-width: 640px) {
+  .card {
+    padding: 1rem;
+    border-radius: 0.625rem;
+  }
+  .stat-card {
+    padding: 1rem;
+    padding-left: 1.25rem;
+  }
+  .stat-value {
+    font-size: 1.25rem;
+  }
+  /* Make the hamburger dropdown a bit friendlier */
+  .btn {
+    padding: 0.55rem 0.875rem;
+  }
+}
