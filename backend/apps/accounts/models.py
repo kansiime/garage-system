@@ -65,3 +65,29 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"{self.user} {self.action} {self.model_name}#{self.object_id}"
+
+
+# after receipt_footer
+whatsapp_template_debt = models.TextField(
+    blank=True,
+    default=(
+        'Hello {name}, this is a friendly reminder about your outstanding '
+        'balance of {amount} at {business}. Please arrange payment at your '
+        'earliest convenience. Thank you.'
+    ),
+)
+whatsapp_template_promise_today = models.TextField(
+    blank=True,
+    default=(
+        'Hello {name}, you promised to pay {amount} today at {business}. '
+        'Kindly visit us or send the payment via mobile money. Thank you.'
+    ),
+)
+whatsapp_template_receipt = models.TextField(
+    blank=True,
+    default=(
+        'Hi {name}, thank you for your purchase at {business}.\n\n'
+        'Receipt #: {reference}\nTotal: {amount}\nPaid: {paid}\nBalance: {balance}\n\n'
+        'We appreciate your business!'
+    ),
+)

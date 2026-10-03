@@ -6,15 +6,19 @@ import api from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 import { useUser, can } from '@/lib/useUser';
+import { useToast } from '@/components/Toast';
+import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
 
 export default function DebtsPage() {
   const user = useUser();
+  const toast = useToast();
   const canEdit = can.editDebts(user);
   const canPay = can.recordPayment(user);
 
   const [debts, setDebts] = useState([]);
   const [promises, setPromises] = useState({ overdue: [], due_today: [], total_due: 0 });
   const [currency, setCurrency] = useState('UGX');
+  const [settings, setSettings] = useState({});
   const [form, setForm] = useState({
     debt_type: 'receivable', party_name: '', party_phone: '',
     amount: '', reference: '', notes: '', promised_date: '',
@@ -35,6 +39,7 @@ export default function DebtsPage() {
     ]);
     setDebts(d.data);
     setPromises(p.data);
+    setSettings(gs.data);
     setCurrency(gs.data.currency_symbol || 'UGX');
   };
   useEffect(() => { load(); }, []);
@@ -59,12 +64,15 @@ export default function DebtsPage() {
         amount: parseFloat(form.amount),
         promised_date: form.promised_date || null,
       });
+      toast.success(`Debt recorded for ${form.party_name}`);
       setForm({ debt_type: 'receivable', party_name: '', party_phone: '',
         amount: '', reference: '', notes: '', promised_date: '' });
       load();
     } catch (err) {
       const d = err.response?.data;
-      setError(typeof d === 'object' ? JSON.stringify(d) : 'Could not save debt.');
+      const msg = typeof d === 'object' ? JSON.stringify(d) : 'Could not save debt.';
+      setError(msg);
+      toast.error(msg);
     } finally { setSaving(false); }
   };
 
@@ -80,11 +88,12 @@ export default function DebtsPage() {
         notes: editModal.notes,
         promised_date: editModal.promised_date || null,
       });
+      toast.success('Debt updated');
       setEditModal(null);
       load();
     } catch (err) {
       const d = err.response?.data;
-      alert(typeof d === 'object' ? JSON.stringify(d) : 'Could not update debt.');
+      toast.error(typeof d === 'object' ? JSON.stringify(d) : 'Could not update debt.');
     }
   };
 
@@ -92,10 +101,74 @@ export default function DebtsPage() {
     if (!confirm('Delete this debt? This cannot be undone.')) return;
     try {
       await api.delete(`/debts/${id}/`);
+      toast.success('Debt deleted');
       load();
     } catch {
-      alert('Could not delete debt.');
+      toast.error('Could not delete debt.');
     }
+  };
+
+  const recordPayment = async (e) => {
+    e.preventDefault();
+    try {
+      await api.post(`/debts/${paymentModal.debt.id}/record_payment/`, {
+        amount: parseFloat(paymentModal.amount),
+        notes: paymentModal.notes,
+      });
+      toast.success(`Payment of ${money(paymentModal.amount)} recorded`);
+      setPaymentModal(null);
+      load();
+    } catch {
+      toast.error('Could not record payment.');
+    }
+  };
+
+  // WhatsApp helpers
+  const getTemplate = (which) => {
+    if (which === 'due_today' && settings.whatsapp_template_promise_today) {
+      return settings.whatsapp_template_promise_today;
+    }
+    if (settings.whatsapp_template_debt) return settings.whatsapp_template_debt;
+    return DEFAULT_TEMPLATES.debt_reminder;
+  };
+
+  const sendWhatsApp = (debt, templateKey = 'debt') => {
+    if (!debt.party_phone) {
+      toast.warning(`${debt.party_name} has no phone number on file.`);
+      return;
+    }
+    const template = templateKey === 'due_today'
+      ? getTemplate('due_today')
+      : getTemplate('debt');
+
+    const message = renderTemplate(template, {
+      name: debt.party_name,
+      amount: money(debt.balance),
+      business: settings.name || 'our garage',
+      promised_date: debt.promised_date || 'soon',
+    });
+
+    openWhatsApp(debt.party_phone, message);
+  };
+
+  const sendBulkWhatsApp = () => {
+    const list = [...promises.overdue, ...promises.due_today];
+    if (list.length === 0) {
+      toast.info('No overdue or due-today promises to remind.');
+      return;
+    }
+    const withPhone = list.filter((d) => d.party_phone);
+    if (withPhone.length === 0) {
+      toast.warning('None of the debtors have phone numbers on file.');
+      return;
+    }
+    if (!confirm(`Open WhatsApp for ${withPhone.length} debtor(s)? Each opens in a new tab.`)) return;
+
+    withPhone.forEach((d, i) => {
+      // Stagger to avoid browser popup blocking
+      setTimeout(() => sendWhatsApp(d, d.promise_status === 'due_today' ? 'due_today' : 'debt'), i * 600);
+    });
+    toast.info(`Opening ${withPhone.length} WhatsApp window(s)…`);
   };
 
   const filtered = useMemo(() => {
@@ -145,9 +218,9 @@ export default function DebtsPage() {
       {/* Promise banner */}
       {promises.total_due > 0 && (
         <div className="mb-6 p-4 rounded-lg bg-amber-50 border border-amber-200">
-          <div className="flex items-start gap-3">
+          <div className="flex items-start gap-3 flex-wrap">
             <span className="text-2xl">🔔</span>
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <p className="font-semibold text-amber-900">
                 {promises.total_due} payment promise{promises.total_due !== 1 && 's'} need attention
               </p>
@@ -166,6 +239,12 @@ export default function DebtsPage() {
                 </p>
               )}
             </div>
+            <button
+              onClick={sendBulkWhatsApp}
+              className="btn btn-success whitespace-nowrap"
+            >
+              💬 WhatsApp all
+            </button>
           </div>
         </div>
       )}
@@ -273,6 +352,13 @@ export default function DebtsPage() {
                   </td>
                   <td><span className={badgeClass(d.status)}>{d.status}</span></td>
                   <td className="text-right whitespace-nowrap">
+                    {d.party_phone && d.status !== 'paid' && (
+                      <button className="btn btn-success btn-sm mr-1"
+                        onClick={() => sendWhatsApp(d, d.promise_status === 'due_today' ? 'due_today' : 'debt')}
+                        title="Send WhatsApp reminder">
+                        💬
+                      </button>
+                    )}
                     {canPay && d.status !== 'paid' && (
                       <button className="btn btn-primary btn-sm mr-1"
                         onClick={() => setPaymentModal({ debt: d, amount: balance, notes: '' })}>
@@ -309,7 +395,6 @@ export default function DebtsPage() {
         startIndex={pg.startIndex} endIndex={pg.endIndex}
         totalItems={filtered.length} label="debts" />
 
-      {/* Payment modal */}
       {paymentModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
@@ -317,14 +402,7 @@ export default function DebtsPage() {
             <p className="text-sm text-slate-500 mb-4">
               {paymentModal.debt.party_name} — balance <b>{money(paymentModal.debt.balance)}</b>
             </p>
-            <form onSubmit={async (e) => {
-              e.preventDefault();
-              await api.post(`/debts/${paymentModal.debt.id}/record_payment/`, {
-                amount: parseFloat(paymentModal.amount), notes: paymentModal.notes,
-              });
-              setPaymentModal(null);
-              load();
-            }}>
+            <form onSubmit={recordPayment}>
               <div className="mb-3"><label>Payment Amount</label>
                 <input type="number" step="0.01" min="0.01"
                   max={parseFloat(paymentModal.debt.balance)}
@@ -343,7 +421,6 @@ export default function DebtsPage() {
         </div>
       )}
 
-      {/* Edit debt modal */}
       {editModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">

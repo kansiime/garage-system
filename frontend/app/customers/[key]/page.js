@@ -5,20 +5,30 @@ import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import api from '@/lib/api';
 import { formatMoney } from '@/lib/format';
+import { useToast } from '@/components/Toast';
+import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
 
 export default function CustomerDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const toast = useToast();
   const key = decodeURIComponent(params.key || '');
 
   const [data, setData] = useState(null);
+  const [settings, setSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
   useEffect(() => {
     setLoading(true);
-    api.get(`/reports/customers/${encodeURIComponent(key)}/`)
-      .then((r) => setData(r.data))
+    Promise.all([
+      api.get(`/reports/customers/${encodeURIComponent(key)}/`),
+      api.get('/auth/settings/'),
+    ])
+      .then(([cust, gs]) => {
+        setData(cust.data);
+        setSettings(gs.data);
+      })
       .catch(() => setError('Could not load customer.'))
       .finally(() => setLoading(false));
   }, [key]);
@@ -47,11 +57,21 @@ export default function CustomerDetailPage() {
   const money = (n) => formatMoney(n, data.currency);
   const s = data.summary;
 
-  const whatsappHref = data.phone
-    ? `https://wa.me/${data.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
-        `Hello ${data.name}, this is a friendly reminder about your outstanding balance of ${money(s.outstanding)}. Thank you.`
-      )}`
-    : null;
+  const sendWhatsApp = () => {
+    if (!data.phone) {
+      toast.warning('This customer has no phone number on file.');
+      return;
+    }
+    const template = settings.whatsapp_template_debt || DEFAULT_TEMPLATES.debt_reminder;
+    const message = renderTemplate(template, {
+      name: data.name,
+      amount: money(s.outstanding),
+      business: settings.name || 'our garage',
+      promised_date: 'soon',
+    });
+    openWhatsApp(data.phone, message);
+    toast.success(`Opening WhatsApp for ${data.name}…`);
+  };
 
   return (
     <ProtectedRoute>
@@ -70,11 +90,10 @@ export default function CustomerDetailPage() {
         </div>
 
         <div className="flex gap-2 flex-wrap">
-          {whatsappHref && (
-            <a href={whatsappHref} target="_blank" rel="noreferrer"
-              className="btn btn-success">
+          {data.phone && (
+            <button onClick={sendWhatsApp} className="btn btn-success">
               💬 WhatsApp
-            </a>
+            </button>
           )}
           {data.phone && (
             <a href={`tel:${data.phone}`} className="btn btn-secondary">
@@ -89,7 +108,7 @@ export default function CustomerDetailPage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <Kpi label="Total Sales" value={s.sale_count} accent="" hint="Transactions" />
+        <Kpi label="Total Sales" value={s.sale_count} hint="Transactions" />
         <Kpi label="Lifetime Spent" value={money(s.total_spent)} accent="green" hint="Sum of all sales" />
         <Kpi label="Outstanding" value={money(s.outstanding)} accent={s.outstanding > 0 ? 'red' : ''} hint="Current balance owed" />
         <Kpi label="Paid on Debts" value={money(s.total_paid_on_debts)} accent="amber" hint="Total debt payments" />
@@ -112,6 +131,7 @@ export default function CustomerDetailPage() {
                   <th className="text-right">Balance</th>
                   <th>Promised</th>
                   <th>Status</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -141,6 +161,25 @@ export default function CustomerDetailPage() {
                       }>
                         {d.status}
                       </span>
+                    </td>
+                    <td className="text-right">
+                      {data.phone && d.balance > 0 && (
+                        <button className="btn btn-success btn-sm"
+                          onClick={() => {
+                            const template = settings.whatsapp_template_debt || DEFAULT_TEMPLATES.debt_reminder;
+                            const msg = renderTemplate(template, {
+                              name: data.name,
+                              amount: money(d.balance),
+                              business: settings.name || 'our garage',
+                              promised_date: d.promised_date || 'soon',
+                            });
+                            openWhatsApp(data.phone, msg);
+                            toast.success(`Reminder sent to ${data.name}`);
+                          }}
+                          title="Send WhatsApp reminder for this debt">
+                          💬
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

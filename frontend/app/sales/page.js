@@ -7,10 +7,14 @@ import Pagination from '@/components/Pagination';
 import api from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
+import { useToast } from '@/components/Toast';
+import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
 
 export default function SalesPage() {
+  const toast = useToast();
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
+  const [settings, setSettings] = useState({});
   const [currency, setCurrency] = useState('UGX');
   const [form, setForm] = useState({
     reference: '', customer_name: '', customer_phone: '',
@@ -33,6 +37,7 @@ export default function SalesPage() {
     ]);
     setSales(s.data);
     setProducts(p.data);
+    setSettings(gs.data);
     setCurrency(gs.data.currency_symbol || 'UGX');
   };
   useEffect(() => { load(); }, []);
@@ -79,20 +84,28 @@ export default function SalesPage() {
     e.preventDefault();
     setError('');
     if (items.some((i) => !i.product || i.quantity <= 0)) {
-      setError('Please pick a product and quantity for every line.');
+      const msg = 'Please pick a product and quantity for every line.';
+      setError(msg);
+      toast.error(msg);
       return;
     }
     const paid = parseFloat(form.amount_paid || 0);
     if (form.payment_type === 'cash' && paid < total) {
-      setError(`Cash sales must be fully paid. Total is ${money(total)}, amount paid is ${money(paid)}.`);
+      const msg = `Cash sales must be fully paid. Total is ${money(total)}, amount paid is ${money(paid)}.`;
+      setError(msg);
+      toast.error(msg);
       return;
     }
     if (form.payment_type === 'credit' && paid > 0) {
-      setError('Credit sales should have Amount Paid = 0. Use Partial for part payments.');
+      const msg = 'Credit sales should have Amount Paid = 0. Use Partial for part payments.';
+      setError(msg);
+      toast.error(msg);
       return;
     }
     if (form.payment_type === 'partial' && (paid <= 0 || paid >= total)) {
-      setError('Partial payments must be greater than 0 and less than the total.');
+      const msg = 'Partial payments must be greater than 0 and less than the total.';
+      setError(msg);
+      toast.error(msg);
       return;
     }
 
@@ -107,11 +120,14 @@ export default function SalesPage() {
           unit_price: parseFloat(i.unit_price),
         })),
       });
+      toast.success(`Sale saved — ${money(total)}`);
       resetForm();
       load();
     } catch (err) {
       const data = err.response?.data;
-      setError(data?.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Could not save sale.'));
+      const msg = data?.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Could not save sale.');
+      setError(msg);
+      toast.error(msg);
     } finally { setSaving(false); }
   };
 
@@ -120,7 +136,29 @@ export default function SalesPage() {
       const res = await api.get(`/sales/${saleId}/receipt/`, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
       window.open(url, '_blank');
-    } catch { alert('Could not generate receipt.'); }
+      toast.success('Receipt opened');
+    } catch {
+      toast.error('Could not generate receipt.');
+    }
+  };
+
+  const sendReceiptWhatsApp = (sale) => {
+    if (!sale.customer_phone) {
+      toast.warning('This sale has no customer phone number.');
+      return;
+    }
+    const template = settings.whatsapp_template_receipt || DEFAULT_TEMPLATES.sale_receipt;
+    const message = renderTemplate(template, {
+      name: sale.customer_name || 'customer',
+      reference: sale.reference,
+      date: new Date(sale.created_at).toLocaleDateString(),
+      amount: money(sale.total_amount),
+      paid: money(sale.amount_paid),
+      balance: money(sale.balance),
+      business: settings.name || 'our garage',
+    });
+    openWhatsApp(sale.customer_phone, message);
+    toast.success(`Opening WhatsApp for ${sale.customer_name || 'customer'}…`);
   };
 
   const money = (n) => formatMoney(n, currency);
@@ -135,7 +173,6 @@ export default function SalesPage() {
     const q = search.trim().toLowerCase();
     return sales.filter((s) => {
       if (filterPayment !== 'all' && s.payment_type !== filterPayment) return false;
-      // Determine LIVE status
       const debtBal = parseFloat(s.debt_balance || 0);
       const liveStatus =
         s.debt_status === 'paid' || (debtBal <= 0)
@@ -160,7 +197,7 @@ export default function SalesPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Sales</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Record new sales and print receipts. Unpaid balances appear on the Debts page.
+          Record new sales and print or WhatsApp receipts.
         </p>
       </div>
 
@@ -300,7 +337,6 @@ export default function SalesPage() {
               </td></tr>
             )}
             {pg.pageItems.map((s) => {
-              // LIVE status driven by the linked debt
               const debtBal = parseFloat(s.debt_balance || 0);
               let liveStatus;
               if (s.debt_status === 'paid' || (debtBal === 0 && parseFloat(s.balance) > 0 && s.debt_status === 'settled')) {
@@ -336,8 +372,16 @@ export default function SalesPage() {
                     )}
                   </td>
                   <td className="text-right whitespace-nowrap">
-                    <button className="btn btn-secondary btn-sm"
-                      onClick={() => printReceipt(s.id)}>🧾 Receipt</button>
+                    <button className="btn btn-secondary btn-sm mr-1"
+                      onClick={() => printReceipt(s.id)} title="Open printable receipt">
+                      🧾
+                    </button>
+                    {s.customer_phone && (
+                      <button className="btn btn-success btn-sm"
+                        onClick={() => sendReceiptWhatsApp(s)} title="Send receipt via WhatsApp">
+                        💬
+                      </button>
+                    )}
                   </td>
                 </tr>
               );
