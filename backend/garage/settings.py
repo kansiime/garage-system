@@ -48,8 +48,8 @@ INSTALLED_APPS = [
     'apps.sales',
     'apps.purchases',
     'apps.debts',
-    'apps.expenses', 
-    'apps.returns', 
+    'apps.expenses',
+    'apps.returns',
     'apps.reports',
 ]
 
@@ -92,12 +92,21 @@ WSGI_APPLICATION = 'garage.wsgi.application'
 # Database
 #   - If DATABASE_URL is set (Render / Neon), use it.
 #   - Otherwise fall back to the individual DB_* env vars used locally.
+#
+#   IMPORTANT (fixes "SSL connection has been closed unexpectedly"):
+#     * conn_max_age=0          → close the connection after every request,
+#                                 so Django never reuses a socket that
+#                                 Render/Neon has already killed.
+#     * conn_health_checks=True → if you later set conn_max_age > 0, Django
+#                                 will ping the connection first and silently
+#                                 reconnect if it is dead instead of crashing.
 # ---------------------------------------------------------------------------
 if os.environ.get('DATABASE_URL'):
     DATABASES = {
         'default': dj_database_url.config(
             default=os.environ['DATABASE_URL'],
-            conn_max_age=600,
+            conn_max_age=0,
+            conn_health_checks=True,
             ssl_require=True,
         )
     }
@@ -111,6 +120,7 @@ else:
             'HOST': os.getenv('DB_HOST', 'localhost'),
             'PORT': os.getenv('DB_PORT', '5432'),
             'OPTIONS': {'sslmode': 'require'},
+            'CONN_MAX_AGE': 0,
         }
     }
 
