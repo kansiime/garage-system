@@ -28,6 +28,7 @@ export default function DebtsPage() {
   const [search, setSearch] = useState('');
   const [paymentModal, setPaymentModal] = useState(null);
   const [editModal, setEditModal] = useState(null);
+  const [historyDebt, setHistoryDebt] = useState(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -365,9 +366,12 @@ export default function DebtsPage() {
                         💬
                       </button>
                     )}
+                    <button className="btn btn-secondary btn-sm mr-1" onClick={() => setHistoryDebt(d)}>
+                      History
+                    </button>
                     {canPay && d.status !== 'paid' && (
                       <button className="btn btn-primary btn-sm mr-1"
-                        onClick={() => setPaymentModal({ debt: d, amount: balance, notes: '' })}>
+                        onClick={() => setPaymentModal({ debt: d, amount: '', notes: '' })}>
                         Record Payment
                       </button>
                     )}
@@ -401,53 +405,90 @@ export default function DebtsPage() {
         startIndex={pg.startIndex} endIndex={pg.endIndex}
         totalItems={filtered.length} label="debts" />
 
-      {paymentModal && (
+      {paymentModal && (() => {
+        const owed = parseFloat(paymentModal.debt.balance);
+        const paying = parseFloat(paymentModal.amount) || 0;
+        const left = owed - paying;
+        return (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
             <h3 className="text-lg font-bold mb-1">Record Payment</h3>
             <p className="text-sm text-slate-500 mb-4">
-              {paymentModal.debt.party_name} — balance <b>{money(paymentModal.debt.balance)}</b>
+              {paymentModal.debt.party_name} — balance <b>{money(owed)}</b>
             </p>
-            {(paymentModal.debt.charges?.length > 1 || paymentModal.debt.payments?.length > 0) && (
-              <div className="mb-4 max-h-48 overflow-y-auto text-sm border border-slate-200 rounded-lg divide-y divide-slate-100">
-                {[
-                  ...(paymentModal.debt.charges || []).map((c) => ({ ...c, kind: 'charge' })),
-                  ...(paymentModal.debt.payments || []).map((p) => ({ ...p, kind: 'payment' })),
-                ]
-                  .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-                  .map((row) => (
-                    <div key={`${row.kind}-${row.id}`} className="flex justify-between gap-2 px-3 py-1.5">
-                      <span className="text-slate-600">
-                        {new Date(row.created_at).toLocaleDateString()}{' '}
-                        {row.kind === 'charge' ? (row.reference || 'Credit') : `Payment${row.notes ? ` — ${row.notes}` : ''}`}
-                      </span>
-                      {(() => {
-                        const adds = row.kind === 'charge' && parseFloat(row.amount) > 0;
-                        return (
-                          <span className={adds ? 'text-red-600' : 'text-green-700'}>
-                            {adds ? '+' : '−'}{money(Math.abs(row.amount))}
-                          </span>
-                        );
-                      })()}
-                    </div>
-                  ))}
-              </div>
-            )}
+            <div className="mb-4">
+              <DebtHistory debt={paymentModal.debt} money={money} compact />
+            </div>
             <form onSubmit={recordPayment}>
-              <div className="mb-3"><label>Payment Amount</label>
-                <input type="number" step="0.01" min="0.01"
-                  max={parseFloat(paymentModal.debt.balance)}
+              <div className="mb-1"><label>Amount being paid now</label>
+                <input type="number" step="0.01" min="0.01" max={owed}
+                  placeholder={`Any amount up to ${money(owed)}`}
                   value={paymentModal.amount}
                   onChange={(e) => setPaymentModal({ ...paymentModal, amount: e.target.value })}
                   required autoFocus /></div>
+              <div className="mb-3 flex items-center justify-between text-sm">
+                <button type="button" className="text-blue-700 hover:underline"
+                  onClick={() => setPaymentModal({ ...paymentModal, amount: String(owed) })}>
+                  Pay full balance ({money(owed)})
+                </button>
+                {paying > 0 && (
+                  left < 0
+                    ? <span className="text-red-600 font-semibold">More than the balance</span>
+                    : <span className="text-slate-600">Remaining after this: <b>{money(left)}</b></span>
+                )}
+              </div>
               <div className="mb-4"><label>Notes</label>
-                <input value={paymentModal.notes}
+                <input placeholder="e.g. Mobile money, cash, paid by brother…" value={paymentModal.notes}
                   onChange={(e) => setPaymentModal({ ...paymentModal, notes: e.target.value })} /></div>
               <div className="flex justify-end gap-2">
                 <button type="button" className="btn btn-secondary" onClick={() => setPaymentModal(null)}>Cancel</button>
-                <button type="submit" className="btn btn-primary">Save Payment</button>
+                <button type="submit" className="btn btn-primary" disabled={paying <= 0 || left < 0}>
+                  {paying > 0 ? `Save Payment of ${money(paying)}` : 'Save Payment'}
+                </button>
               </div>
             </form>
+          </div>
+        </div>
+        );
+      })()}
+
+      {historyDebt && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setHistoryDebt(null)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h3 className="text-lg font-bold">{historyDebt.party_name}</h3>
+                <p className="text-sm text-slate-500">
+                  {historyDebt.party_phone || 'No phone'} · {historyDebt.debt_type}
+                </p>
+              </div>
+              <span className={badgeClass(historyDebt.status)}>{historyDebt.status}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-3 mb-4 text-center">
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="text-xs text-slate-500">Total credit</p>
+                <p className="font-semibold">{money(historyDebt.amount)}</p>
+              </div>
+              <div className="rounded-lg bg-green-50 p-3">
+                <p className="text-xs text-slate-500">Paid</p>
+                <p className="font-semibold text-green-700">{money(historyDebt.amount_paid)}</p>
+              </div>
+              <div className="rounded-lg bg-red-50 p-3">
+                <p className="text-xs text-slate-500">Balance</p>
+                <p className="font-semibold text-red-600">{money(historyDebt.balance)}</p>
+              </div>
+            </div>
+            <DebtHistory debt={historyDebt} money={money} />
+            <div className="mt-5 flex justify-end gap-2">
+              {canPay && historyDebt.status !== 'paid' && (
+                <button className="btn btn-primary" onClick={() => {
+                  setPaymentModal({ debt: historyDebt, amount: '', notes: '' });
+                  setHistoryDebt(null);
+                }}>Record Payment</button>
+              )}
+              <button className="btn btn-secondary" onClick={() => setHistoryDebt(null)}>Close</button>
+            </div>
           </div>
         </div>
       )}
@@ -494,3 +535,72 @@ export default function DebtsPage() {
     </ProtectedRoute>
   );
 }
+
+// Credits and payments in date order, with the balance after each line.
+// Debts from before the history existed may carry money paid at the time of
+// sale that has no payment record; that shows as one "Paid at sale" line.
+function buildHistory(debt) {
+  const charges = (debt.charges || []).map((c) => ({
+    key: `c-${c.id}`, date: c.created_at, change: parseFloat(c.amount),
+    label: parseFloat(c.amount) < 0 ? 'Amount reduced' : 'Credit given',
+    detail: [c.reference, c.notes].filter(Boolean).join(' — '),
+    by: c.recorded_by,
+  }));
+  const payments = (debt.payments || []).map((p) => ({
+    key: `p-${p.id}`, date: p.created_at, change: -parseFloat(p.amount),
+    label: 'Payment', detail: p.notes || '', by: p.recorded_by,
+  }));
+  const recorded = payments.reduce((t, p) => t - p.change, 0);
+  const unrecorded = parseFloat(debt.amount_paid) - recorded;
+  const rows = [...charges, ...payments];
+  if (unrecorded > 0.004) {
+    const first = charges.length ? charges[0].date : debt.created_at;
+    rows.push({ key: 'upfront', date: first, change: -unrecorded,
+      label: 'Paid at sale', detail: 'Paid when the debt was recorded', by: '', after: true });
+  }
+  rows.sort((a, b) => new Date(a.date) - new Date(b.date) || (a.after ? 1 : 0) - (b.after ? 1 : 0));
+  let running = 0;
+  return rows.map((r) => ({ ...r, balance: (running += r.change) }));
+}
+
+function DebtHistory({ debt, money, compact = false }) {
+  const rows = buildHistory(debt);
+  if (rows.length === 0) return <p className="text-sm text-slate-400">No history yet.</p>;
+  return (
+    <div className={`overflow-y-auto border border-slate-200 rounded-lg ${compact ? 'max-h-48' : 'max-h-[55vh]'}`}>
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 sticky top-0">
+          <tr>
+            <th className="text-left px-3 py-2">Date</th>
+            <th className="text-left px-3 py-2">Entry</th>
+            <th className="text-right px-3 py-2">Amount</th>
+            <th className="text-right px-3 py-2">Balance</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td className="px-3 py-2 whitespace-nowrap text-slate-600">
+                {new Date(r.date).toLocaleDateString()}
+                {!compact && <div className="text-xs text-slate-400">{new Date(r.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>}
+              </td>
+              <td className="px-3 py-2">
+                <div className="font-medium">{r.label}</div>
+                {!compact && (r.detail || r.by) && (
+                  <div className="text-xs text-slate-500">
+                    {r.detail}{r.detail && r.by && ' · '}{r.by && `by ${r.by}`}
+                  </div>
+                )}
+              </td>
+              <td className={`px-3 py-2 text-right whitespace-nowrap ${r.change > 0 ? 'text-red-600' : 'text-green-700'}`}>
+                {r.change > 0 ? '+' : '−'}{money(Math.abs(r.change))}
+              </td>
+              <td className="px-3 py-2 text-right whitespace-nowrap font-semibold">{money(r.balance)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+

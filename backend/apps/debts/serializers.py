@@ -3,19 +3,22 @@ from .models import Debt, DebtCharge, DebtPayment
 
 
 class DebtPaymentSerializer(serializers.ModelSerializer):
+    recorded_by = serializers.CharField(source='user.username', read_only=True, default='')
+
     class Meta:
         model = DebtPayment
-        fields = ['id', 'debt', 'amount', 'notes', 'created_at']
+        fields = ['id', 'debt', 'amount', 'notes', 'recorded_by', 'created_at']
         read_only_fields = ['user', 'created_at']
 
 
 class DebtChargeSerializer(serializers.ModelSerializer):
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    recorded_by = serializers.CharField(source='user.username', read_only=True, default='')
 
     class Meta:
         model = DebtCharge
         fields = ['id', 'amount', 'amount_paid', 'balance', 'reference',
-                  'sale', 'purchase', 'notes', 'created_at']
+                  'sale', 'purchase', 'notes', 'recorded_by', 'created_at']
         read_only_fields = fields
 
 
