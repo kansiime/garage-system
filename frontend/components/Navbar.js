@@ -4,6 +4,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import api from '@/lib/api';
 import { can } from '@/lib/useUser';
+import ChangePasswordModal from '@/components/ChangePasswordModal';
 
 export default function Navbar() {
   const router = useRouter();
@@ -12,6 +13,7 @@ export default function Navbar() {
   const [brand, setBrand] = useState('Garage MS');
   const [menuOpen, setMenuOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
   const [dueCount, setDueCount] = useState(0);
   const userMenuRef = useRef(null);
 
@@ -73,6 +75,8 @@ export default function Navbar() {
   };
 
   return (
+    <>
+    {pwOpen && <ChangePasswordModal onClose={() => setPwOpen(false)} />}
     <nav className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
       <div className="max-w-[1400px] mx-auto px-3 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16 gap-2">
@@ -122,6 +126,10 @@ export default function Navbar() {
                   </div>
                   <Link href="/settings" onClick={() => setUserMenuOpen(false)}
                     className="block px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50">⚙️ Settings</Link>
+                  <button onClick={() => { setUserMenuOpen(false); setPwOpen(true); }}
+                    className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50">
+                    🔑 Change password
+                  </button>
                   <button onClick={logout}
                     className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 border-t border-slate-100">
                     🚪 Logout
@@ -163,5 +171,6 @@ export default function Navbar() {
         )}
       </div>
     </nav>
+    </>
   );
 }

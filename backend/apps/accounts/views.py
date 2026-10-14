@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from .models import User, GarageSettings, AuditLog
 from .serializers import (
@@ -34,6 +36,31 @@ def login_view(request):
         'refresh': str(refresh),
         'user': UserSerializer(user).data,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """Any logged-in user can change their own password."""
+    current = request.data.get('current_password') or ''
+    new = request.data.get('new_password') or ''
+    user = request.user
+
+    if not user.check_password(current):
+        return Response({'current_password': ['Current password is incorrect.']}, status=400)
+    if not new:
+        return Response({'new_password': ['Enter a new password.']}, status=400)
+    if new == current:
+        return Response({'new_password': ['New password must be different from the current one.']}, status=400)
+    try:
+        validate_password(new, user=user)
+    except DjangoValidationError as e:
+        return Response({'new_password': list(e.messages)}, status=400)
+
+    user.set_password(new)
+    user.save(update_fields=['password'])
+    log(request, 'update', 'User', user.id, f'{user.username} changed their password')
+    return Response({'detail': 'Password updated.'})
 
 
 class UserViewSet(viewsets.ModelViewSet):

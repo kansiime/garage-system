@@ -8,6 +8,7 @@ from .views import (
     AuditLogViewSet,
     garage_settings,
     public_settings,
+    change_password,
 )
 
 router = DefaultRouter()
@@ -19,5 +20,6 @@ urlpatterns = [
     path('refresh/', TokenRefreshView.as_view()),
     path('settings/', garage_settings),
     path('public-settings/', public_settings),
+    path('change-password/', change_password),
     path('', include(router.urls)),
 ]
