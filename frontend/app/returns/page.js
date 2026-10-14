@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ProductPicker from '@/components/ProductPicker';
 import Pagination from '@/components/Pagination';
-import api from '@/lib/api';
+import api, { apiError } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 
@@ -86,8 +86,7 @@ export default function ReturnsPage() {
       resetForm();
       load();
     } catch (err) {
-      const d = err.response?.data;
-      setError(typeof d === 'object' ? JSON.stringify(d) : 'Could not save return.');
+      setError(apiError(err, 'Could not save return.'));
     } finally { setSaving(false); }
   };
 

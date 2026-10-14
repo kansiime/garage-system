@@ -17,11 +17,23 @@ class IsAdminManagerOrStorekeeper(BasePermission):
 
 
 class RoleBasedPermission(BasePermission):
-    """Allow access based on allowed_roles on view"""
+    """
+    Allow access based on `allowed_roles` on the view. If the view also sets
+    `write_roles`, unsafe methods (POST/PUT/PATCH/DELETE) are limited to those
+    roles, except for actions listed in `open_write_actions`.
+    """
+    SAFE_METHODS = ('GET', 'HEAD', 'OPTIONS')
+
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
             return False
+        role = getattr(request.user, 'role', None)
         allowed = getattr(view, 'allowed_roles', None)
-        if not allowed:
-            return True
-        return request.user.role in allowed
+        if allowed and role not in allowed:
+            return False
+        write_roles = getattr(view, 'write_roles', None)
+        if write_roles and request.method not in self.SAFE_METHODS:
+            if getattr(view, 'action', None) in getattr(view, 'open_write_actions', ()):
+                return True
+            return role in write_roles
+        return True

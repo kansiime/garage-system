@@ -4,7 +4,7 @@ import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ProductPicker from '@/components/ProductPicker';
 import Pagination from '@/components/Pagination';
-import api from '@/lib/api';
+import api, { apiError } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 import { useToast } from '@/components/Toast';
@@ -108,24 +108,43 @@ export default function SalesPage() {
       toast.error(msg);
       return;
     }
+    if (paid > total && form.payment_type !== 'cash') {
+      const msg = `Amount paid (${money(paid)}) is more than the total (${money(total)}).`;
+      setError(msg);
+      toast.error(msg);
+      return;
+    }
+    if (paid < total && !form.customer_name.trim()) {
+      const msg = 'Enter the customer name — the unpaid balance will be recorded as their debt.';
+      setError(msg);
+      toast.error(msg);
+      return;
+    }
 
     setSaving(true);
     try {
-      await api.post('/sales/', {
+      const res = await api.post('/sales/', {
         ...form,
-        amount_paid: paid,
+        // Cash handed over beyond the total is change, not payment
+        amount_paid: Math.min(paid, total),
         items: items.map((i) => ({
           product: parseInt(i.product),
           quantity: parseInt(i.quantity),
           unit_price: parseFloat(i.unit_price),
         })),
       });
-      toast.success(`Sale saved — ${money(total)}`);
+      const sale = res.data;
+      if (parseFloat(sale.balance) > 0) {
+        toast.success(sale.debt_merged
+          ? `Sale saved. ${money(sale.balance)} added to ${sale.customer_name}'s debt — now owes ${money(sale.customer_total_debt)}.`
+          : `Sale saved. ${money(sale.balance)} recorded as debt for ${sale.customer_name}.`);
+      } else {
+        toast.success(`Sale saved — ${money(total)}`);
+      }
       resetForm();
       load();
     } catch (err) {
-      const data = err.response?.data;
-      const msg = data?.detail || (typeof data === 'object' ? JSON.stringify(data) : 'Could not save sale.');
+      const msg = apiError(err, 'Could not save sale.');
       setError(msg);
       toast.error(msg);
     } finally { setSaving(false); }
@@ -210,8 +229,9 @@ export default function SalesPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
           <div><label>Reference</label>
             <input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} required /></div>
-          <div><label>Customer Name</label>
-            <input placeholder="Walk-in" value={form.customer_name}
+          <div><label>Customer Name{form.payment_type !== 'cash' && ' *'}</label>
+            <input placeholder={form.payment_type === 'cash' ? 'Walk-in' : 'Required for credit'}
+              required={form.payment_type !== 'cash'} value={form.customer_name}
               onChange={(e) => setForm({ ...form, customer_name: e.target.value })} /></div>
           <div><label>Customer Phone</label>
             <input placeholder="Optional" value={form.customer_phone}
@@ -233,7 +253,8 @@ export default function SalesPage() {
         {form.payment_type !== 'cash' && total > 0 && (
           <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
             <b>Balance owed:</b> {money(Math.max(0, total - (parseFloat(form.amount_paid) || 0)))}
-            {' '}— will be recorded as a receivable debt.
+            {' '}— will be added to {form.customer_name.trim() || 'the customer'}&apos;s debt
+            {' '}(combined with any balance they already owe).
           </div>
         )}
 

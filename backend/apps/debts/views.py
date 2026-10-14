@@ -1,26 +1,68 @@
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
-from datetime import timedelta
 
-from .models import Debt, DebtPayment
+from .models import Debt
 from .serializers import DebtSerializer, RecordPaymentSerializer
+from . import services
 from apps.accounts.permissions import RoleBasedPermission
 from apps.accounts.audit import log
 
 
 class DebtViewSet(viewsets.ModelViewSet):
-    queryset = Debt.objects.all().order_by('-id')
+    queryset = Debt.objects.prefetch_related('payments', 'charges').order_by('-id')
     serializer_class = DebtSerializer
     permission_classes = [IsAuthenticated, RoleBasedPermission]
     allowed_roles = ['admin', 'manager', 'cashier']
     write_roles = ['admin', 'manager']
+    open_write_actions = ['record_payment']   # cashiers can take payments
 
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+    def create(self, request, *args, **kwargs):
+        """New credit for a party with an open debt is added to that debt."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        debt, merged = services.add_charge(
+            debt_type=data['debt_type'],
+            party_name=data['party_name'],
+            party_phone=data.get('party_phone', ''),
+            amount=data['amount'],
+            reference=data.get('reference', ''),
+            notes=data.get('notes', ''),
+            promised_date=data.get('promised_date'),
+            user=request.user,
+        )
+        log(request, 'create', 'Debt', debt.id,
+            f"{'Added' if merged else 'New debt'} {data['amount']} for {debt.party_name}")
+        body = DebtSerializer(debt).data
+        body['merged'] = merged
+        return Response(body, status=status.HTTP_201_CREATED)
+
+    def perform_update(self, serializer):
+        debt = serializer.instance
+        new_amount = serializer.validated_data.pop('amount', None)
+        with transaction.atomic():
+            serializer.save()
+            if new_amount is not None and new_amount != debt.amount:
+                services.adjust_amount(debt, new_amount, user=self.request.user)
+                old = debt.amount
+                debt.refresh_from_db()
+                log(self.request, 'update', 'Debt', debt.id,
+                    f'Amount changed {old} → {debt.amount} for {debt.party_name}')
+
+    def perform_destroy(self, instance):
+        if instance.payments.exists():
+            raise ValidationError({'detail': 'This debt has payments recorded and cannot be deleted.'})
+        if instance.charges.filter(Q(sale__isnull=False) | Q(purchase__isnull=False)).exists():
+            raise ValidationError({'detail': 'This debt comes from a sale or purchase and cannot be deleted. Record a return instead.'})
+        log(self.request, 'delete', 'Debt', instance.id,
+            f'Deleted debt {instance.amount} for {instance.party_name}')
+        instance.delete()
 
     @action(detail=True, methods=['post'])
     def record_payment(self, request, pk=None):
@@ -28,15 +70,10 @@ class DebtViewSet(viewsets.ModelViewSet):
         serializer = RecordPaymentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         amount = serializer.validated_data['amount']
-        with transaction.atomic():
-            DebtPayment.objects.create(
-                debt=debt, amount=amount,
-                notes=serializer.validated_data.get('notes', ''),
-                user=request.user,
-            )
-            debt.amount_paid += amount
-            debt.save()
-            debt.update_status()
+        debt, _ = services.record_payment(
+            debt.id, amount, user=request.user,
+            notes=serializer.validated_data.get('notes', ''),
+        )
         log(request, 'payment', 'Debt', debt.id,
             f'Payment {amount} for {debt.party_name}')
         return Response(DebtSerializer(debt).data)

@@ -4,6 +4,13 @@ from django.utils import timezone
 
 
 class Debt(models.Model):
+    """
+    A running account for one party (customer or supplier).
+
+    `amount` is the sum of all charges (credit given) and `amount_paid` the sum
+    of all payments, so a repeat customer has ONE open debt that grows with each
+    credit sale and shrinks with each payment. See apps/debts/services.py.
+    """
     DEBT_TYPE = [
         ('receivable', 'Receivable (Owed to us)'),
         ('payable', 'Payable (We owe)'),
@@ -57,6 +64,41 @@ class Debt(models.Model):
 
     def __str__(self):
         return f"{self.get_debt_type_display()} — {self.party_name}: {self.balance}"
+
+
+class DebtCharge(models.Model):
+    """
+    One line of credit added to a debt (a credit sale's unpaid balance, a
+    purchase's unpaid balance, a manual entry, or an adjustment).
+    Payments are allocated to charges oldest-first via `amount_paid`.
+    """
+    debt = models.ForeignKey(Debt, on_delete=models.CASCADE, related_name='charges')
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    reference = models.CharField(max_length=100, blank=True)
+    sale = models.ForeignKey(
+        'sales.Sale', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='debt_charges',
+    )
+    purchase = models.ForeignKey(
+        'purchases.Purchase', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='debt_charges',
+    )
+    notes = models.TextField(blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+
+    @property
+    def balance(self):
+        return self.amount - self.amount_paid
+
+    def __str__(self):
+        return f"Charge {self.amount} on {self.debt.party_name} ({self.reference})"
 
 
 class DebtPayment(models.Model):

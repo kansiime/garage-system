@@ -11,6 +11,8 @@ class ReturnViewSet(viewsets.ModelViewSet):
     serializer_class = ReturnSerializer
     permission_classes = [IsAuthenticated, RoleBasedPermission]
     allowed_roles = ['admin', 'manager', 'cashier', 'storekeeper']
+    # Returns move stock and debts, so they are create-only
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
         qs = super().get_queryset()

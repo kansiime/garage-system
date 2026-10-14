@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Pagination from '@/components/Pagination';
-import api from '@/lib/api';
+import api, { apiError } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 import { useUser, can } from '@/lib/useUser';
@@ -59,18 +59,19 @@ export default function DebtsPage() {
     setError('');
     setSaving(true);
     try {
-      await api.post('/debts/', {
+      const res = await api.post('/debts/', {
         ...form,
         amount: parseFloat(form.amount),
         promised_date: form.promised_date || null,
       });
-      toast.success(`Debt recorded for ${form.party_name}`);
+      toast.success(res.data.merged
+        ? `${money(form.amount)} added to ${res.data.party_name}'s existing debt — balance now ${money(res.data.balance)}`
+        : `Debt recorded for ${res.data.party_name}`);
       setForm({ debt_type: 'receivable', party_name: '', party_phone: '',
         amount: '', reference: '', notes: '', promised_date: '' });
       load();
     } catch (err) {
-      const d = err.response?.data;
-      const msg = typeof d === 'object' ? JSON.stringify(d) : 'Could not save debt.';
+      const msg = apiError(err, 'Could not save debt.');
       setError(msg);
       toast.error(msg);
     } finally { setSaving(false); }
@@ -79,8 +80,7 @@ export default function DebtsPage() {
   const saveEdit = async (e) => {
     e.preventDefault();
     try {
-      await api.put(`/debts/${editModal.id}/`, {
-        debt_type: editModal.debt_type,
+      await api.patch(`/debts/${editModal.id}/`, {
         party_name: editModal.party_name,
         party_phone: editModal.party_phone,
         amount: parseFloat(editModal.amount),
@@ -92,8 +92,7 @@ export default function DebtsPage() {
       setEditModal(null);
       load();
     } catch (err) {
-      const d = err.response?.data;
-      toast.error(typeof d === 'object' ? JSON.stringify(d) : 'Could not update debt.');
+      toast.error(apiError(err, 'Could not update debt.'));
     }
   };
 
@@ -103,23 +102,26 @@ export default function DebtsPage() {
       await api.delete(`/debts/${id}/`);
       toast.success('Debt deleted');
       load();
-    } catch {
-      toast.error('Could not delete debt.');
+    } catch (err) {
+      toast.error(apiError(err, 'Could not delete debt.'));
     }
   };
 
   const recordPayment = async (e) => {
     e.preventDefault();
     try {
-      await api.post(`/debts/${paymentModal.debt.id}/record_payment/`, {
+      const res = await api.post(`/debts/${paymentModal.debt.id}/record_payment/`, {
         amount: parseFloat(paymentModal.amount),
         notes: paymentModal.notes,
       });
-      toast.success(`Payment of ${money(paymentModal.amount)} recorded`);
+      const left = parseFloat(res.data.balance);
+      toast.success(left > 0
+        ? `Payment of ${money(paymentModal.amount)} recorded — ${money(left)} still owed`
+        : `Payment of ${money(paymentModal.amount)} recorded — debt fully paid`);
       setPaymentModal(null);
       load();
-    } catch {
-      toast.error('Could not record payment.');
+    } catch (err) {
+      toast.error(apiError(err, 'Could not record payment.'));
     }
   };
 
@@ -180,7 +182,8 @@ export default function DebtsPage() {
       return (
         d.party_name.toLowerCase().includes(q) ||
         (d.party_phone || '').toLowerCase().includes(q) ||
-        (d.reference || '').toLowerCase().includes(q)
+        (d.reference || '').toLowerCase().includes(q) ||
+        (d.charges || []).some((c) => (c.reference || '').toLowerCase().includes(q))
       );
     });
   }, [debts, filterType, filterStatus, search]);
@@ -269,6 +272,9 @@ export default function DebtsPage() {
       {canEdit && (
         <form onSubmit={submit} className="card mb-6">
           <p className="card-title">Record New Debt</p>
+          <p className="text-xs text-slate-500 -mt-2 mb-3">
+            If this person already has an unpaid debt (same phone, or same name), the amount is added to it.
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div><label>Type</label>
               <select value={form.debt_type} onChange={(e) => setForm({ ...form, debt_type: e.target.value })}>
@@ -402,6 +408,31 @@ export default function DebtsPage() {
             <p className="text-sm text-slate-500 mb-4">
               {paymentModal.debt.party_name} — balance <b>{money(paymentModal.debt.balance)}</b>
             </p>
+            {(paymentModal.debt.charges?.length > 1 || paymentModal.debt.payments?.length > 0) && (
+              <div className="mb-4 max-h-48 overflow-y-auto text-sm border border-slate-200 rounded-lg divide-y divide-slate-100">
+                {[
+                  ...(paymentModal.debt.charges || []).map((c) => ({ ...c, kind: 'charge' })),
+                  ...(paymentModal.debt.payments || []).map((p) => ({ ...p, kind: 'payment' })),
+                ]
+                  .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+                  .map((row) => (
+                    <div key={`${row.kind}-${row.id}`} className="flex justify-between gap-2 px-3 py-1.5">
+                      <span className="text-slate-600">
+                        {new Date(row.created_at).toLocaleDateString()}{' '}
+                        {row.kind === 'charge' ? (row.reference || 'Credit') : `Payment${row.notes ? ` — ${row.notes}` : ''}`}
+                      </span>
+                      {(() => {
+                        const adds = row.kind === 'charge' && parseFloat(row.amount) > 0;
+                        return (
+                          <span className={adds ? 'text-red-600' : 'text-green-700'}>
+                            {adds ? '+' : '−'}{money(Math.abs(row.amount))}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  ))}
+              </div>
+            )}
             <form onSubmit={recordPayment}>
               <div className="mb-3"><label>Payment Amount</label>
                 <input type="number" step="0.01" min="0.01"
@@ -428,8 +459,7 @@ export default function DebtsPage() {
             <form onSubmit={saveEdit}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div><label>Type</label>
-                  <select value={editModal.debt_type}
-                    onChange={(e) => setEditModal({ ...editModal, debt_type: e.target.value })}>
+                  <select value={editModal.debt_type} disabled title="Debt type cannot be changed">
                     <option value="receivable">Receivable</option>
                     <option value="payable">Payable</option>
                   </select></div>

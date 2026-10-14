@@ -42,4 +42,13 @@ export const downloadFile = async (url, filename) => {
   setTimeout(() => window.URL.revokeObjectURL(blobUrl), 1000);
 };
 
+// Turn a DRF error response into one readable line.
+export const apiError = (err, fallback = 'Something went wrong.') => {
+  const d = err?.response?.data;
+  if (!d || typeof d !== 'object') return fallback;
+  if (d.detail) return String(d.detail);
+  const flat = (v) => (Array.isArray(v) ? v.map(flat).join(' ') : typeof v === 'object' && v ? Object.values(v).map(flat).join(' ') : String(v));
+  return Object.values(d).map(flat).filter(Boolean).join(' ') || fallback;
+};
+
 export default api;

@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import api from '@/lib/api';
+import api, { apiError } from '@/lib/api';
 import ProductPicker from '@/components/ProductPicker';
 import { formatMoney } from '@/lib/format';
 
@@ -90,11 +90,7 @@ export default function PurchasesPage() {
       resetForm();
       load();
     } catch (err) {
-      const data = err.response?.data;
-      setError(
-        data?.detail ||
-        (typeof data === 'object' ? JSON.stringify(data) : 'Could not save purchase.')
-      );
+      setError(apiError(err, 'Could not save purchase.'));
     } finally {
       setSaving(false);
     }

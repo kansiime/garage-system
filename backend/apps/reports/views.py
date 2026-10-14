@@ -598,7 +598,6 @@ def customers_list(request):
             }
         customers[key]['sale_count'] += 1
         customers[key]['total_spent'] += s.total_amount
-        customers[key]['balance'] += s.balance
         if s.created_at > customers[key]['last_visit']:
             customers[key]['last_visit'] = s.created_at
             if s.customer_name:
@@ -608,7 +607,8 @@ def customers_list(request):
         if s.created_at < customers[key]['first_visit']:
             customers[key]['first_visit'] = s.created_at
 
-    # 2. Merge in receivable debts not already covered
+    # 2. Merge in receivable debts. Outstanding balance comes from debts only —
+    #    a credit sale's unpaid part already lives in its debt.
     for d in Debt.objects.filter(debt_type='receivable'):
         key = _make_key(d.party_name, d.party_phone)
         if key not in customers:
@@ -681,7 +681,7 @@ def customer_detail(request, key):
             if not n and not p:
                 return True
             # Also match auto-generated debt labels
-            if n.startswith('Customer (SL-') or n.startswith('Customer (PO-)'):
+            if n.startswith('Customer (SL-') or n.startswith('Customer (PO-'):
                 return True
             return False
 

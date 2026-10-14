@@ -1,6 +1,8 @@
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
 from io import BytesIO
@@ -16,36 +18,53 @@ from apps.accounts.permissions import RoleBasedPermission
 from apps.accounts.models import GarageSettings
 from apps.accounts.audit import log
 from apps.debts.models import Debt
+from apps.inventory.models import Product, StockMovement
 
 
 class SaleViewSet(viewsets.ModelViewSet):
-    queryset = Sale.objects.all().order_by('-id')
+    queryset = Sale.objects.prefetch_related('items__product', 'debt_charges').order_by('-id')
     serializer_class = SaleSerializer
     permission_classes = [IsAuthenticated, RoleBasedPermission]
     allowed_roles = ['admin', 'manager', 'cashier']
+    # Sales are never edited in place (that would desync stock and debts).
+    # Mistakes are fixed with a return, or voided by an admin.
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
 
     def perform_create(self, serializer):
         sale = serializer.save(user=self.request.user)
         log(self.request, 'create', 'Sale', sale.id,
             f'Sale {sale.reference} — {sale.total_amount}')
 
-        # Auto-create a receivable debt if there's an outstanding balance
-        if sale.balance and sale.balance > 0:
-            Debt.objects.create(
-                debt_type='receivable',
-                party_name=(sale.customer_name or '').strip() or f'Customer ({sale.reference})',
-                party_phone=sale.customer_phone or '',
-                amount=sale.total_amount,
-                amount_paid=sale.amount_paid,
-                reference=sale.reference,
-                notes=f'Auto-created from sale {sale.reference}',
-                user=self.request.user,
-                status=(
-                    'paid' if sale.amount_paid >= sale.total_amount
-                    else 'partial' if sale.amount_paid > 0
-                    else 'open'
-                ),
-            )
+    def perform_destroy(self, sale):
+        """Void a sale: admin only, put stock back and remove its debt charge."""
+        if self.request.user.role != 'admin':
+            raise PermissionDenied('Only an admin can void a sale.')
+        with transaction.atomic():
+            for charge in sale.debt_charges.select_related('debt'):
+                if charge.amount_paid > 0:
+                    raise ValidationError({'detail': (
+                        'Payments have been made against this sale\'s debt. '
+                        'Record a return instead of voiding it.'
+                    )})
+                debt = Debt.objects.select_for_update().get(pk=charge.debt_id)
+                debt.amount -= charge.amount
+                charge.delete()
+                if debt.amount <= 0 and not debt.payments.exists():
+                    debt.delete()
+                else:
+                    debt.update_status()
+            for item in sale.items.select_related('product'):
+                product = Product.objects.select_for_update().get(pk=item.product_id)
+                product.quantity += item.quantity
+                product.save(update_fields=['quantity', 'updated_at'])
+                StockMovement.objects.create(
+                    product=product, movement_type='in', quantity=item.quantity,
+                    reference=f'VOID {sale.reference}', user=self.request.user,
+                    notes='Sale voided',
+                )
+            log(self.request, 'delete', 'Sale', sale.id,
+                f'Voided sale {sale.reference} — {sale.total_amount}')
+            sale.delete()
 
     @action(detail=True, methods=['get'], url_path='receipt')
     def receipt(self, request, pk=None):
@@ -123,6 +142,9 @@ class SaleViewSet(viewsets.ModelViewSet):
             ['Paid', f"{sale.amount_paid:,.0f}"],
             ['Balance', f"{sale.balance:,.0f}"],
         ]
+        charge = sale.debt_charges.select_related('debt').first()
+        if charge and charge.debt.balance > sale.balance:
+            totals.append(['Total owed (all)', f"{charge.debt.balance:,.0f}"])
         totals_tbl = Table(totals, colWidths=[None, 40 * mm])
         totals_tbl.setStyle(TableStyle([
             ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
