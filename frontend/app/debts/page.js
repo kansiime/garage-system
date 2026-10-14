@@ -24,7 +24,7 @@ export default function DebtsPage() {
     amount: '', reference: '', notes: '', promised_date: '',
   });
   const [filterType, setFilterType] = useState('all');
-  const [filterStatus, setFilterStatus] = useState('open');
+  const [filterStatus, setFilterStatus] = useState('unpaid');
   const [search, setSearch] = useState('');
   const [paymentModal, setPaymentModal] = useState(null);
   const [editModal, setEditModal] = useState(null);
@@ -49,7 +49,7 @@ export default function DebtsPage() {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const q = params.get('search');
-      if (q) setSearch(q);
+      if (q) { setSearch(q); setFilterStatus('all'); }
     }
   }, []);
 
@@ -178,7 +178,8 @@ export default function DebtsPage() {
     const q = search.trim().toLowerCase();
     return debts.filter((d) => {
       if (filterType !== 'all' && d.debt_type !== filterType) return false;
-      if (filterStatus !== 'all' && d.status !== filterStatus) return false;
+      if (filterStatus === 'unpaid' ? d.status === 'paid'
+        : filterStatus !== 'all' && d.status !== filterStatus) return false;
       if (!q) return true;
       return (
         d.party_name.toLowerCase().includes(q) ||
@@ -318,8 +319,9 @@ export default function DebtsPage() {
             </select></div>
           <div><label>Status</label>
             <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+              <option value="unpaid">Unpaid (open + partial)</option>
               <option value="all">All</option>
-              <option value="open">Open</option>
+              <option value="open">Open (nothing paid)</option>
               <option value="partial">Partial</option>
               <option value="paid">Paid</option>
             </select></div>
