@@ -9,16 +9,24 @@ import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 import { useToast } from '@/components/Toast';
 import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
+import { useUser, can } from '@/lib/useUser';
+
+const todayISO = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
 
 export default function SalesPage() {
   const toast = useToast();
+  const user = useUser();
   const [sales, setSales] = useState([]);
   const [products, setProducts] = useState([]);
   const [settings, setSettings] = useState({});
   const [currency, setCurrency] = useState('UGX');
   const [form, setForm] = useState({
     reference: '', customer_name: '', customer_phone: '',
-    payment_type: 'cash', amount_paid: '', notes: '',
+    payment_type: 'cash', amount_paid: '', notes: '', sale_date: '',
   });
   const [items, setItems] = useState([{ product: '', quantity: 1, unit_price: 0 }]);
   const [error, setError] = useState('');
@@ -74,7 +82,7 @@ export default function SalesPage() {
   const resetForm = () => {
     setForm({
       reference: generateRef(), customer_name: '', customer_phone: '',
-      payment_type: 'cash', amount_paid: '', notes: '',
+      payment_type: 'cash', amount_paid: '', notes: '', sale_date: '',
     });
     setItems([{ product: '', quantity: 1, unit_price: 0 }]);
   };
@@ -125,6 +133,7 @@ export default function SalesPage() {
     try {
       const res = await api.post('/sales/', {
         ...form,
+        sale_date: (can.backdateSales(user) && form.sale_date) || null,
         // Cash handed over beyond the total is change, not payment
         amount_paid: Math.min(paid, total),
         items: items.map((i) => ({
@@ -248,7 +257,18 @@ export default function SalesPage() {
           <div><label>Notes</label>
             <input placeholder="Optional" value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
+          {can.backdateSales(user) && (
+            <div><label>Sale Date <span className="text-slate-400 font-normal">(blank = now)</span></label>
+              <input type="date" max={todayISO()} value={form.sale_date}
+                onChange={(e) => setForm({ ...form, sale_date: e.target.value })} /></div>
+          )}
         </div>
+
+        {can.backdateSales(user) && form.sale_date && form.sale_date !== todayISO() && (
+          <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800">
+            This sale will be recorded on <b>{new Date(form.sale_date + 'T00:00').toLocaleDateString()}</b>, not today.
+          </div>
+        )}
 
         {form.payment_type !== 'cash' && total > 0 && (
           <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">

@@ -122,6 +122,40 @@ class DebtFlowTests(APITestCase):
         self.assertEqual(self.client.put(f'/api/sales/{s["id"]}/', {}, format='json').status_code, 405)
         self.assertEqual(self.client.delete(f'/api/sales/{s["id"]}/').status_code, 403)
 
+    def test_admin_can_backdate_sale_cashier_cannot(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from apps.inventory.models import StockMovement
+
+        yesterday = timezone.localdate() - timedelta(days=1)
+        res = self.client.post('/api/sales/', {
+            'reference': 'SL-OLD', 'customer_name': 'Hal', 'amount_paid': 0,
+            'sale_date': yesterday.isoformat(),
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 100}],
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
+        self.client.force_authenticate(self.admin)
+        res = self.client.post('/api/sales/', {
+            'reference': 'SL-OLD', 'customer_name': 'Hal', 'amount_paid': 0,
+            'sale_date': yesterday.isoformat(),
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 100}],
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        sale = Sale.objects.get(reference='SL-OLD')
+        self.assertEqual(timezone.localtime(sale.created_at).date(), yesterday)
+        mv = StockMovement.objects.get(reference='SL-OLD')
+        self.assertEqual(timezone.localtime(mv.created_at).date(), yesterday)
+        charge = DebtCharge.objects.get(sale=sale)
+        self.assertEqual(timezone.localtime(charge.created_at).date(), yesterday)
+
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        res = self.client.post('/api/sales/', {
+            'reference': 'SL-NEXT', 'amount_paid': 100, 'sale_date': tomorrow.isoformat(),
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 100}],
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
     def test_admin_void_restores_stock_and_debt(self):
         self.sell('Gus', price=100, qty=2)
         s2 = self.sell('Gus', price=100, qty=3)

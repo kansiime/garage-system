@@ -1,6 +1,8 @@
 from rest_framework import serializers
 from django.db import transaction
 from django.db.models import Sum
+from django.utils import timezone
+from datetime import datetime
 from decimal import Decimal
 
 from .models import Sale, SaleItem
@@ -38,13 +40,16 @@ class SaleSerializer(serializers.ModelSerializer):
     debt_status = serializers.SerializerMethodField()
     debt_id = serializers.SerializerMethodField()
 
+    # Admins can record a forgotten sale on an earlier day
+    sale_date = serializers.DateField(write_only=True, required=False, allow_null=True)
+
     class Meta:
         model = Sale
         fields = [
             'id', 'reference', 'customer_name', 'customer_phone',
             'payment_type', 'total_amount', 'amount_paid', 'balance',
             'debt_balance', 'debt_status', 'debt_id',
-            'notes', 'items', 'created_at',
+            'notes', 'items', 'created_at', 'sale_date',
         ]
         read_only_fields = ['user', 'created_at', 'total_amount', 'payment_type']
 
@@ -67,6 +72,16 @@ class SaleSerializer(serializers.ModelSerializer):
     def get_debt_id(self, obj):
         c = self._charge(obj)
         return c.debt_id if c else None
+
+    def validate_sale_date(self, value):
+        if value is None or value == timezone.localdate():
+            return value
+        request = self.context.get('request')
+        if not request or getattr(request.user, 'role', None) != 'admin':
+            raise serializers.ValidationError('Only an admin can record a sale on another date.')
+        if value > timezone.localdate():
+            raise serializers.ValidationError('Sale date cannot be in the future.')
+        return value
 
     def validate(self, attrs):
         items = attrs.get('items') or []
@@ -96,6 +111,7 @@ class SaleSerializer(serializers.ModelSerializer):
 
         items_data = validated_data.pop('items')
         total = validated_data.pop('_total')
+        sale_date = validated_data.pop('sale_date', None)
         user = validated_data.get('user')
         with transaction.atomic():
             # Lock products and check stock before selling
@@ -111,17 +127,18 @@ class SaleSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'items': 'Not enough stock: ' + '; '.join(short)})
 
             sale = Sale.objects.create(total_amount=total, **validated_data)
+            movement_ids = []
             for item in items_data:
                 product = products[item['product'].id]
                 item['product'] = product
                 SaleItem.objects.create(sale=sale, cost_price=product.cost_price, **item)
                 product.quantity -= item['quantity']
                 product.save(update_fields=['quantity', 'updated_at'])
-                StockMovement.objects.create(
+                movement_ids.append(StockMovement.objects.create(
                     product=product, movement_type='out',
                     quantity=item['quantity'], reference=sale.reference,
                     user=user,
-                )
+                ).id)
 
             # Any unpaid balance goes onto the customer's running debt
             if sale.balance > 0:
@@ -138,7 +155,23 @@ class SaleSerializer(serializers.ModelSerializer):
                 )
                 sale._debt = debt
                 sale._debt_merged = merged
+
+            if sale_date and sale_date != timezone.localdate():
+                self._backdate(sale, sale_date, movement_ids)
         return sale
+
+    def _backdate(self, sale, sale_date, movement_ids):
+        """Move the sale and everything it created onto `sale_date` (keeping the time of day)."""
+        from apps.debts.models import Debt
+
+        when = timezone.make_aware(datetime.combine(sale_date, timezone.localtime().time()))
+        Sale.objects.filter(pk=sale.pk).update(created_at=when)
+        StockMovement.objects.filter(id__in=movement_ids).update(created_at=when)
+        sale.debt_charges.update(created_at=when)
+        if hasattr(sale, '_debt') and not sale._debt_merged:
+            # Brand-new debt that only holds this sale
+            Debt.objects.filter(pk=sale._debt.pk).update(created_at=when)
+        sale.created_at = when
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

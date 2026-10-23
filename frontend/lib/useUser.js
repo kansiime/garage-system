@@ -24,6 +24,7 @@ export const can = {
   viewSuppliers: (u) => hasRole(u, 'admin', 'manager', 'storekeeper'),
   viewInventoryCost: (u) => hasRole(u, 'admin', 'manager', 'storekeeper'),
   reconcile: (u) => hasRole(u, 'admin'),
+  backdateSales: (u) => hasRole(u, 'admin'),
   createReturns: (u) => hasRole(u, 'admin', 'manager', 'storekeeper'),
   recordPayment: (u) => hasRole(u, 'admin', 'manager', 'cashier'),
 };
