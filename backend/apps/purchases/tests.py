@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
+from apps.debts import services
 from apps.debts.models import Debt
 from apps.inventory.models import Product, Supplier
 from apps.purchases.models import Purchase
@@ -87,3 +88,41 @@ class PurchaseDetailActionTests(APITestCase):
         p = self.buy(status='received')
         res = self.client.patch(f'/api/purchases/{p["id"]}/', {'status': 'cancelled'}, format='json')
         self.assertEqual(res.status_code, 400)
+
+
+class LinkPurchaseDebtsCommandTests(APITestCase):
+    def setUp(self):
+        self.papa = Supplier.objects.create(name='Papa Spares')
+        self.aba = Supplier.objects.create(name='ABA')
+
+    def legacy(self, ref, supplier, total, paid=0):
+        # How purchases looked before they booked a supplier debt
+        return Purchase.objects.create(reference=ref, supplier=supplier, status='received',
+                                       total_amount=total, amount_paid=paid)
+
+    def run_cmd(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('link_purchase_debts', *args, stdout=out)
+        return out.getvalue()
+
+    def test_dry_run_changes_nothing_and_apply_links(self):
+        p = self.legacy('PO-1', self.papa, Decimal('1000'), Decimal('200'))
+        self.assertIn('LINK  PO-1', self.run_cmd())
+        self.assertEqual(Debt.objects.count(), 0)
+        self.run_cmd('--apply')
+        debt = Debt.objects.get()
+        self.assertEqual(debt.balance, Decimal('800'))
+        self.assertEqual(debt.charges.get().purchase, p)
+        self.assertIn('already has', self.run_cmd('--apply'))
+        self.assertEqual(Debt.objects.get().balance, Decimal('800'))
+
+    def test_supplier_with_hand_entered_debt_is_skipped(self):
+        services.add_charge(debt_type='payable', party_name='ABA', amount=500)
+        self.legacy('PO-2', self.aba, Decimal('500'))
+        self.legacy('PO-3', self.papa, Decimal('300'))
+        out = self.run_cmd('--apply')
+        self.assertIn('SKIP  PO-2', out)
+        self.assertEqual(Debt.objects.get(party_name='ABA').balance, Decimal('500'))
+        self.assertEqual(Debt.objects.get(party_name='Papa Spares').balance, Decimal('300'))
