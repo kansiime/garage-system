@@ -119,4 +119,8 @@ class PurchaseSerializer(serializers.ModelSerializer):
             instance.save(update_fields=['status', 'notes'])
             if old_status == 'pending' and new_status == 'received':
                 _stock_in(instance)
+            if old_status == 'pending' and new_status == 'cancelled':
+                # Nothing was delivered, so we no longer owe the unpaid part
+                from apps.debts import services
+                services.write_off_purchase(instance, user=instance.user)
         return instance

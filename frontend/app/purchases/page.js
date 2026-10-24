@@ -4,8 +4,13 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import api, { apiError } from '@/lib/api';
 import ProductPicker from '@/components/ProductPicker';
 import { formatMoney } from '@/lib/format';
+import { useUser, can } from '@/lib/useUser';
+import { useToast } from '@/components/Toast';
 
 export default function PurchasesPage() {
+  const user = useUser();
+  const toast = useToast();
+  const canPay = can.paySuppliers(user);
   const [purchases, setPurchases] = useState([]);
   const [products, setProducts] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -20,6 +25,9 @@ export default function PurchasesPage() {
   const [items, setItems] = useState([{ product: '', quantity: 1, unit_cost: 0 }]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [payment, setPayment] = useState({ amount: '', notes: '' });
+  const [busy, setBusy] = useState(false);
 
   const load = async () => {
     const [p, pr, s, gs] = await Promise.all([
@@ -98,6 +106,55 @@ export default function PurchasesPage() {
 
   const money = (n) => formatMoney(n, currency);
 
+  const openPurchase = (p) => {
+    setSelected(p);
+    setPayment({ amount: '', notes: '' });
+  };
+
+  // Keep the open purchase and the list in step after a change
+  const applyUpdate = (updated) => {
+    setSelected(updated);
+    setPurchases((list) => list.map((p) => (p.id === updated.id ? updated : p)));
+  };
+
+  const changeStatus = async (status) => {
+    const msg = status === 'received'
+      ? `Mark ${selected.reference} as received? This adds the items to stock and cannot be undone.`
+      : `Cancel ${selected.reference}? Any unpaid balance owed to the supplier will be removed. This cannot be undone.`;
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      const res = await api.patch(`/purchases/${selected.id}/`, { status });
+      applyUpdate(res.data);
+      toast.success(status === 'received' ? 'Purchase received — stock updated' : 'Purchase cancelled');
+    } catch (err) {
+      toast.error(apiError(err, 'Could not update purchase.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const paySupplier = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const res = await api.post(`/purchases/${selected.id}/pay/`, {
+        amount: parseFloat(payment.amount),
+        notes: payment.notes,
+      });
+      applyUpdate(res.data);
+      setPayment({ amount: '', notes: '' });
+      const left = parseFloat(res.data.balance);
+      toast.success(left > 0
+        ? `Payment of ${money(payment.amount)} recorded — ${money(left)} still owed`
+        : `Payment of ${money(payment.amount)} recorded — purchase fully paid`);
+    } catch (err) {
+      toast.error(apiError(err, 'Could not record payment.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const statusBadge = (status) => {
     if (status === 'received') return 'badge badge-green';
     if (status === 'cancelled') return 'badge badge-red';
@@ -109,7 +166,7 @@ export default function PurchasesPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Purchases</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Record purchases from suppliers. Set status to <b>Received</b> to add stock automatically.
+          Record purchases from suppliers. Set status to <b>Received</b> to add stock automatically. Click a purchase to see its items, receive it or pay the supplier.
         </p>
       </div>
 
@@ -279,7 +336,7 @@ export default function PurchasesPage() {
               </tr>
             )}
             {purchases.map((p) => (
-              <tr key={p.id}>
+              <tr key={p.id} className="cursor-pointer hover:bg-slate-50" onClick={() => openPurchase(p)}>
                 <td className="font-mono text-xs">{p.reference}</td>
                 <td className="whitespace-nowrap">{new Date(p.created_at).toLocaleString()}</td>
                 <td>{p.supplier_name || '—'}</td>
@@ -288,14 +345,135 @@ export default function PurchasesPage() {
                 </td>
                 <td className="text-right font-medium">{money(p.total_amount)}</td>
                 <td className="text-right">{money(p.amount_paid)}</td>
-                <td className={`text-right ${parseFloat(p.balance) > 0 ? 'text-red-600 font-semibold' : ''}`}>
-                  {money(p.balance)}
+                <td className={`text-right ${p.status !== 'cancelled' && parseFloat(p.balance) > 0 ? 'text-red-600 font-semibold' : ''}`}>
+                  {p.status === 'cancelled' ? '—' : money(p.balance)}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {selected && (() => {
+        const owed = parseFloat(selected.balance);
+        const paying = parseFloat(payment.amount) || 0;
+        const left = owed - paying;
+        return (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setSelected(null)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h3 className="text-lg font-bold font-mono">{selected.reference}</h3>
+                <p className="text-sm text-slate-500">
+                  {selected.supplier_name || 'No supplier'} · {new Date(selected.created_at).toLocaleString()}
+                </p>
+              </div>
+              <span className={statusBadge(selected.status)}>{selected.status}</span>
+            </div>
+
+            <div className="table-scroll mb-4">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th className="text-right">Qty</th>
+                    <th className="text-right">Unit Cost</th>
+                    <th className="text-right">Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selected.items.map((it) => (
+                    <tr key={it.id}>
+                      <td>{it.product_name}</td>
+                      <td className="text-right">{it.quantity}</td>
+                      <td className="text-right">{money(it.unit_cost)}</td>
+                      <td className="text-right font-medium">{money(it.subtotal)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 mb-4 text-center">
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="text-xs text-slate-500">Total</p>
+                <p className="font-semibold">{money(selected.total_amount)}</p>
+              </div>
+              <div className="rounded-lg bg-green-50 p-3">
+                <p className="text-xs text-slate-500">Paid</p>
+                <p className="font-semibold text-green-700">{money(selected.amount_paid)}</p>
+              </div>
+              <div className="rounded-lg bg-red-50 p-3">
+                <p className="text-xs text-slate-500">Balance</p>
+                <p className="font-semibold text-red-600">
+                  {selected.status === 'cancelled' ? '—' : money(owed)}
+                </p>
+              </div>
+            </div>
+
+            {selected.notes && (
+              <p className="text-sm text-slate-600 mb-4"><b>Notes:</b> {selected.notes}</p>
+            )}
+
+            {selected.status === 'pending' && (
+              <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-amber-800">Stock has not been added yet.</p>
+                <div className="flex gap-2">
+                  {canPay && (
+                    <button className="btn btn-danger btn-sm" disabled={busy}
+                      onClick={() => changeStatus('cancelled')}>
+                      Cancel Purchase
+                    </button>
+                  )}
+                  <button className="btn btn-success btn-sm" disabled={busy}
+                    onClick={() => changeStatus('received')}>
+                    Mark Received
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {canPay && selected.status !== 'cancelled' && owed > 0 && (
+              <form onSubmit={paySupplier} className="border-t border-slate-100 pt-4">
+                <p className="text-sm font-semibold text-slate-700 mb-2">Pay Supplier</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-1">
+                  <div><label>Amount being paid now</label>
+                    <input type="number" step="0.01" min="0.01" max={owed}
+                      placeholder={`Any amount up to ${money(owed)}`}
+                      value={payment.amount}
+                      onChange={(e) => setPayment({ ...payment, amount: e.target.value })}
+                      required /></div>
+                  <div><label>Notes</label>
+                    <input placeholder="e.g. Mobile money, cash…" value={payment.notes}
+                      onChange={(e) => setPayment({ ...payment, notes: e.target.value })} /></div>
+                </div>
+                <div className="mb-3 flex items-center justify-between text-sm">
+                  <button type="button" className="text-blue-700 hover:underline"
+                    onClick={() => setPayment({ ...payment, amount: String(owed) })}>
+                    Pay full balance ({money(owed)})
+                  </button>
+                  {paying > 0 && (
+                    left < 0
+                      ? <span className="text-red-600 font-semibold">More than the balance</span>
+                      : <span className="text-slate-600">Remaining after this: <b>{money(left)}</b></span>
+                  )}
+                </div>
+                <div className="flex justify-end">
+                  <button type="submit" className="btn btn-primary" disabled={busy || paying <= 0 || left < 0}>
+                    {paying > 0 ? `Save Payment of ${money(paying)}` : 'Save Payment'}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            <div className="mt-5 flex justify-end">
+              <button className="btn btn-secondary" onClick={() => setSelected(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
     </ProtectedRoute>
   );
 }

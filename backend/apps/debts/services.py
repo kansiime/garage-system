@@ -156,6 +156,30 @@ def adjust_amount(debt, new_amount, *, user=None, notes=''):
 
 
 @transaction.atomic
+def write_off_purchase(purchase, *, user=None):
+    """
+    Remove the unpaid part of a cancelled purchase from the supplier's debt.
+    The charge is shrunk to what was already paid so later payments can't be
+    allocated to it. Returns the amount written off.
+    """
+    written_off = ZERO
+    charges = DebtCharge.objects.select_for_update().filter(purchase=purchase)
+    for charge in charges:
+        open_amt = charge.balance
+        if open_amt <= ZERO:
+            continue
+        debt = Debt.objects.select_for_update().get(pk=charge.debt_id)
+        charge.amount -= open_amt
+        note = f'{open_amt:,.2f} written off, purchase {purchase.reference} cancelled'
+        charge.notes = f'{charge.notes} — {note}' if charge.notes else note
+        charge.save(update_fields=['amount', 'notes'])
+        debt.amount -= open_amt
+        debt.update_status()
+        written_off += open_amt
+    return written_off
+
+
+@transaction.atomic
 def credit_by_reference(debt_type, reference, amount, *, user=None, notes=''):
     """
     Reduce the debt that holds the charge for `reference` (used by returns),

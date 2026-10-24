@@ -27,4 +27,5 @@ export const can = {
   backdateSales: (u) => hasRole(u, 'admin'),
   createReturns: (u) => hasRole(u, 'admin', 'manager', 'storekeeper'),
   recordPayment: (u) => hasRole(u, 'admin', 'manager', 'cashier'),
+  paySuppliers: (u) => hasRole(u, 'admin', 'manager'),
 };
