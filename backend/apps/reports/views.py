@@ -83,6 +83,11 @@ def _filter_expenses_by_date(qs, start, end):
     return qs.filter(expense_date__gte=start, expense_date__lte=end)
 
 
+def _active_purchases():
+    # Cancelled purchases were never delivered, so they don't count as spend
+    return Purchase.objects.exclude(status='cancelled')
+
+
 # ---------------------------------------------------------------------------
 # Dashboard summary
 # ---------------------------------------------------------------------------
@@ -117,8 +122,23 @@ def dashboard_summary(request):
             'purchase': qs.filter(return_type='purchase').count(),
         }
 
-    purchases_today = _filter_by_local_date(Purchase.objects.all(), today, today)
-    purchases_month = _filter_by_local_date(Purchase.objects.all(), month_start, today)
+    purchases_today = _filter_by_local_date(_active_purchases(), today, today)
+    purchases_month = _filter_by_local_date(_active_purchases(), month_start, today)
+
+    # Last 7 days, including days with no sales, for the dashboard chart
+    week_start = today - timedelta(days=6)
+    days = {week_start + timedelta(days=n): {'total': Decimal('0'), 'profit': Decimal('0')}
+            for n in range(7)}
+    tz = timezone.get_current_timezone()
+    week_items = SaleItem.objects.filter(
+        sale__in=_filter_by_local_date(Sale.objects.all(), week_start, today)
+    ).select_related('sale')
+    for i in week_items:
+        day = days[timezone.localtime(i.sale.created_at, tz).date()]
+        day['total'] += i.quantity * i.unit_price
+        day['profit'] += i.quantity * (i.unit_price - i.cost_price)
+    trend = [{'date': d.strftime('%Y-%m-%d'), 'total': float(v['total']),
+              'profit': float(v['profit'])} for d, v in days.items()]
 
     receivables = Debt.objects.filter(debt_type='receivable').exclude(status='paid')
     payables = Debt.objects.filter(debt_type='payable').exclude(status='paid')
@@ -161,6 +181,9 @@ def dashboard_summary(request):
         ),
         'low_stock': low_qs.count(),
         'low_stock_items': low_stock_items,
+        'trend': trend,
+        'receivables_count': receivables.count(),
+        'payables_count': payables.count(),
         'currency': shop.currency_symbol or shop.currency_code or 'UGX',
         'business_name': shop.name,
     })
@@ -178,7 +201,7 @@ def reports_overview(request):
 
     sales_qs = _filter_by_local_date(Sale.objects.all(), start, end)
     items_qs = SaleItem.objects.filter(sale__in=sales_qs)
-    purchases_qs = _filter_by_local_date(Purchase.objects.all(), start, end)
+    purchases_qs = _filter_by_local_date(_active_purchases(), start, end)
     debts_qs = _filter_by_local_date(Debt.objects.all(), start, end)
     expenses_qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
     returns_qs = _filter_by_local_date(Return.objects.all(), start, end)
@@ -429,11 +452,14 @@ def purchases_report(request):
     rows = [[p.reference,
              timezone.localtime(p.created_at).strftime('%Y-%m-%d %H:%M'),
              p.supplier.name if p.supplier else '-', p.status,
-             float(p.total_amount), float(p.amount_paid), float(p.balance)]
+             float(p.total_amount), float(p.amount_paid),
+             0.0 if p.status == 'cancelled' else float(p.balance)]
             for p in purchases]
+    active = purchases.exclude(status='cancelled')
     summary = {**_shop_meta(),
-               'Total Purchases': float(purchases.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
-               'Count': purchases.count()}
+               'Total Purchases': float(active.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
+               'Count': active.count(),
+               'Cancelled': purchases.count() - active.count()}
     return _respond(request, f"Purchases Report ({start} to {end})", headers, rows, summary)
 
 
