@@ -22,7 +22,7 @@ class Debt(models.Model):
     ]
     debt_type = models.CharField(max_length=20, choices=DEBT_TYPE)
     party_name = models.CharField(max_length=200)
-    party_phone = models.CharField(max_length=20, blank=True)
+    party_phone = models.CharField(max_length=50, blank=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     status = models.CharField(max_length=20, choices=STATUS, default='open')

@@ -84,6 +84,12 @@ class PurchaseDetailActionTests(APITestCase):
         self.oil.refresh_from_db()
         self.assertEqual(self.oil.quantity, 5)
 
+    def test_unpaid_purchase_from_supplier_with_long_phone(self):
+        self.supplier.phone = '0772 123 456 / 0701 987 654'
+        self.supplier.save()
+        self.buy()
+        self.assertEqual(Debt.objects.get().party_phone, '0772 123 456 / 0701 987 654')
+
     def test_received_purchase_cannot_be_cancelled(self):
         p = self.buy(status='received')
         res = self.client.patch(f'/api/purchases/{p["id"]}/', {'status': 'cancelled'}, format='json')
