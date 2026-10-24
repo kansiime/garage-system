@@ -31,6 +31,8 @@ export default function SalesPage() {
   const [items, setItems] = useState([{ product: '', quantity: 1, unit_price: 0 }]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const showProfit = can.viewInventoryCost(user);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -225,7 +227,7 @@ export default function SalesPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Sales</h1>
         <p className="text-sm text-slate-500 mt-1">
-          Record new sales and print or WhatsApp receipts.
+          Record new sales and print or WhatsApp receipts. Click a sale to see what was sold.
         </p>
       </div>
 
@@ -391,7 +393,7 @@ export default function SalesPage() {
               }
 
               return (
-                <tr key={s.id}>
+                <tr key={s.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setSelected(s)}>
                   <td className="font-mono text-xs">{s.reference}</td>
                   <td className="whitespace-nowrap">{new Date(s.created_at).toLocaleString()}</td>
                   <td>{s.customer_name || 'Walk-in'}</td>
@@ -405,14 +407,14 @@ export default function SalesPage() {
                   <td>
                     {debtBal > 0 ? (
                       <Link href={`/debts?search=${encodeURIComponent(s.reference)}`}
-                        className="badge badge-red hover:bg-red-200">
+                        className="badge badge-red hover:bg-red-200" onClick={(e) => e.stopPropagation()}>
                         {money(debtBal)} owed
                       </Link>
                     ) : (
                       <span className="badge badge-green">settled</span>
                     )}
                   </td>
-                  <td className="text-right whitespace-nowrap">
+                  <td className="text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                     <button className="btn btn-secondary btn-sm mr-1"
                       onClick={() => printReceipt(s.id)} title="Open printable receipt">
                       🧾
@@ -434,6 +436,96 @@ export default function SalesPage() {
       <Pagination page={pg.page} totalPages={pg.totalPages} goTo={pg.setPage}
         startIndex={pg.startIndex} endIndex={pg.endIndex}
         totalItems={filtered.length} label="sales" />
+
+      {selected && (() => {
+        const debtBal = parseFloat(selected.debt_balance || 0);
+        const profit = selected.items.reduce((sum, it) => sum + parseFloat(it.profit || 0), 0);
+        return (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setSelected(null)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div>
+                <h3 className="text-lg font-bold font-mono">{selected.reference}</h3>
+                <p className="text-sm text-slate-500">
+                  {selected.customer_name || 'Walk-in'}
+                  {selected.customer_phone && ` · ${selected.customer_phone}`}
+                  {' · '}{new Date(selected.created_at).toLocaleString()}
+                </p>
+              </div>
+              <span className="badge badge-gray capitalize">{selected.payment_type}</span>
+            </div>
+
+            <div className="table-scroll mb-4">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th className="text-right">Qty</th>
+                    <th className="text-right">Unit Price</th>
+                    <th className="text-right">Subtotal</th>
+                    {showProfit && <th className="text-right">Profit</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {selected.items.map((it) => (
+                    <tr key={it.id}>
+                      <td>{it.product_name}</td>
+                      <td className="text-right">{it.quantity}</td>
+                      <td className="text-right">{money(it.unit_price)}</td>
+                      <td className="text-right font-medium">{money(it.subtotal)}</td>
+                      {showProfit && <td className="text-right text-slate-600">{money(it.profit)}</td>}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 mb-4 text-center">
+              <div className="rounded-lg bg-slate-50 p-3">
+                <p className="text-xs text-slate-500">Total</p>
+                <p className="font-semibold">{money(selected.total_amount)}</p>
+              </div>
+              <div className="rounded-lg bg-green-50 p-3">
+                <p className="text-xs text-slate-500">Paid</p>
+                <p className="font-semibold text-green-700">{money(selected.amount_paid)}</p>
+              </div>
+              <div className="rounded-lg bg-red-50 p-3">
+                <p className="text-xs text-slate-500">Balance</p>
+                <p className="font-semibold text-red-600">{money(selected.balance)}</p>
+              </div>
+            </div>
+
+            {showProfit && (
+              <p className="text-sm text-slate-600 mb-2"><b>Profit on this sale:</b> {money(profit)}</p>
+            )}
+            {selected.notes && (
+              <p className="text-sm text-slate-600 mb-2"><b>Notes:</b> {selected.notes}</p>
+            )}
+            {debtBal > 0 && (
+              <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-red-700">
+                  {money(debtBal)} still owed on this sale.
+                </p>
+                <Link href={`/debts?search=${encodeURIComponent(selected.reference)}`}
+                  className="btn btn-primary btn-sm">
+                  Record payment in Debts
+                </Link>
+              </div>
+            )}
+
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button className="btn btn-secondary" onClick={() => printReceipt(selected.id)}>🧾 Receipt</button>
+              {selected.customer_phone && (
+                <button className="btn btn-success" onClick={() => sendReceiptWhatsApp(selected)}>💬 WhatsApp</button>
+              )}
+              <button className="btn btn-secondary" onClick={() => setSelected(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
     </ProtectedRoute>
   );
 }
