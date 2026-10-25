@@ -9,6 +9,14 @@ import { useUser, can } from '@/lib/useUser';
 import { useToast } from '@/components/Toast';
 import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
 
+const todayISO = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+const emptyFollowUp = () => ({ contacted_on: todayISO(), method: 'call', note: '', promised_date: '' });
+
 export default function DebtsPage() {
   const user = useUser();
   const toast = useToast();
@@ -29,6 +37,9 @@ export default function DebtsPage() {
   const [paymentModal, setPaymentModal] = useState(null);
   const [editModal, setEditModal] = useState(null);
   const [historyDebt, setHistoryDebt] = useState(null);
+  const [historyTab, setHistoryTab] = useState('money');
+  const [followUp, setFollowUp] = useState(emptyFollowUp());
+  const [savingFollowUp, setSavingFollowUp] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -124,6 +135,31 @@ export default function DebtsPage() {
     } catch (err) {
       toast.error(apiError(err, 'Could not record payment.'));
     }
+  };
+
+  const openHistory = (debt, tab) => {
+    setHistoryDebt(debt);
+    setHistoryTab(tab);
+    setFollowUp(emptyFollowUp());
+  };
+
+  const saveFollowUp = async (e) => {
+    e.preventDefault();
+    setSavingFollowUp(true);
+    try {
+      const res = await api.post(`/debts/${historyDebt.id}/add_follow_up/`, {
+        ...followUp,
+        promised_date: followUp.promised_date || null,
+      });
+      toast.success(followUp.promised_date
+        ? `Follow-up saved — promised date set to ${followUp.promised_date}`
+        : 'Follow-up saved');
+      setHistoryDebt(res.data);
+      setFollowUp(emptyFollowUp());
+      load();
+    } catch (err) {
+      toast.error(apiError(err, 'Could not save follow-up.'));
+    } finally { setSavingFollowUp(false); }
   };
 
   // WhatsApp helpers
@@ -350,7 +386,14 @@ export default function DebtsPage() {
                 <tr key={d.id}>
                   <td className="whitespace-nowrap text-sm text-slate-600">{new Date(d.created_at).toLocaleDateString()}</td>
                   <td><span className={d.debt_type === 'receivable' ? 'badge badge-amber' : 'badge badge-red'}>{d.debt_type}</span></td>
-                  <td className="font-medium">{d.party_name}</td>
+                  <td>
+                    <div className="font-medium">{d.party_name}</div>
+                    {d.follow_ups?.length > 0 && (
+                      <div className="text-xs text-slate-400" title={d.follow_ups[0].note}>
+                        Last contact {d.follow_ups[0].contacted_on}
+                      </div>
+                    )}
+                  </td>
                   <td className="text-sm text-slate-600">{d.party_phone || '—'}</td>
                   <td className="text-right">{money(d.amount)}</td>
                   <td className="text-right">{money(d.amount_paid)}</td>
@@ -368,7 +411,11 @@ export default function DebtsPage() {
                         💬
                       </button>
                     )}
-                    <button className="btn btn-secondary btn-sm mr-1" onClick={() => setHistoryDebt(d)}>
+                    <button className="btn btn-secondary btn-sm mr-1" onClick={() => openHistory(d, 'notes')}
+                      title="Follow-up notes">
+                      📝 Notes{d.follow_ups?.length > 0 && ` (${d.follow_ups.length})`}
+                    </button>
+                    <button className="btn btn-secondary btn-sm mr-1" onClick={() => openHistory(d, 'money')}>
                       History
                     </button>
                     {canPay && d.status !== 'paid' && (
@@ -481,7 +528,54 @@ export default function DebtsPage() {
                 <p className="font-semibold text-red-600">{money(historyDebt.balance)}</p>
               </div>
             </div>
-            <DebtHistory debt={historyDebt} money={money} />
+            <div className="flex gap-1 mb-3 border-b border-slate-200">
+              {[['money', 'Credit & payments'], ['notes', `Follow-up notes (${historyDebt.follow_ups?.length || 0})`]].map(([key, label]) => (
+                <button key={key} type="button" onClick={() => setHistoryTab(key)}
+                  className={`px-3 py-2 text-sm -mb-px border-b-2 ${historyTab === key
+                    ? 'border-blue-600 text-blue-700 font-semibold'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {historyTab === 'money' ? (
+              <DebtHistory debt={historyDebt} money={money} />
+            ) : (
+              <>
+                {canPay && (
+                  <form onSubmit={saveFollowUp} className="mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div><label>Date contacted</label>
+                        <input type="date" max={todayISO()} value={followUp.contacted_on}
+                          onChange={(e) => setFollowUp({ ...followUp, contacted_on: e.target.value })} required /></div>
+                      <div><label>How</label>
+                        <select value={followUp.method}
+                          onChange={(e) => setFollowUp({ ...followUp, method: e.target.value })}>
+                          <option value="call">Phone call</option>
+                          <option value="whatsapp">WhatsApp</option>
+                          <option value="sms">SMS</option>
+                          <option value="visit">In person</option>
+                          <option value="other">Other</option>
+                        </select></div>
+                      <div><label>New promised date</label>
+                        <input type="date" min={todayISO()} value={followUp.promised_date}
+                          onChange={(e) => setFollowUp({ ...followUp, promised_date: e.target.value })} /></div>
+                      <div className="md:col-span-3"><label>What was said</label>
+                        <textarea rows={2} value={followUp.note} required
+                          onChange={(e) => setFollowUp({ ...followUp, note: e.target.value })}
+                          placeholder="e.g. Called, he said he will pay half on Friday…" /></div>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-500">Saved notes cannot be changed or deleted.</p>
+                      <button className="btn btn-primary btn-sm" disabled={savingFollowUp || !followUp.note.trim()}>
+                        {savingFollowUp ? 'Saving…' : 'Save Note'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+                <FollowUpList followUps={historyDebt.follow_ups || []} />
+              </>
+            )}
             <div className="mt-5 flex justify-end gap-2">
               {canPay && historyDebt.status !== 'paid' && (
                 <button className="btn btn-primary" onClick={() => {
@@ -535,6 +629,27 @@ export default function DebtsPage() {
         </div>
       )}
     </ProtectedRoute>
+  );
+}
+
+function FollowUpList({ followUps }) {
+  if (followUps.length === 0) return <p className="text-sm text-slate-400">No follow-ups recorded yet.</p>;
+  return (
+    <ul className="max-h-[40vh] overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+      {followUps.map((f) => (
+        <li key={f.id} className="px-3 py-2 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium">{f.contacted_on} · {f.method_display}</span>
+            {f.promised_date && <span className="badge badge-amber">Promised {f.promised_date}</span>}
+          </div>
+          <p className="mt-1 whitespace-pre-wrap text-slate-700">{f.note}</p>
+          <p className="mt-1 text-xs text-slate-400">
+            Logged {new Date(f.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
+            {f.recorded_by && ` by ${f.recorded_by}`}
+          </p>
+        </li>
+      ))}
+    </ul>
   );
 }
 

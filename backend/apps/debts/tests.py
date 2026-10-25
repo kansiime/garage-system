@@ -1,4 +1,7 @@
+from datetime import timedelta
 from decimal import Decimal
+
+from django.utils import timezone
 
 from rest_framework.test import APITestCase
 
@@ -196,6 +199,29 @@ class DebtFlowTests(APITestCase):
         self.client.force_authenticate(self.admin)
         s = self.sell('Kim', price=100)
         self.assertEqual(self.client.delete(f'/api/debts/{s["debt_id"]}/').status_code, 400)
+
+    # --- follow-ups ---------------------------------------------------------
+    def test_cashier_can_log_follow_up_and_it_sets_promised_date(self):
+        s = self.sell('Lee', phone='0772111222', price=100)
+        promised = timezone.localdate() + timedelta(days=3)
+        res = self.client.post(f'/api/debts/{s["debt_id"]}/add_follow_up/', {
+            'method': 'call', 'note': 'Said he will pay on Friday',
+            'promised_date': promised.isoformat(),
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['promised_date'], promised.isoformat())
+        entry = res.data['follow_ups'][0]
+        self.assertEqual(entry['note'], 'Said he will pay on Friday')
+        self.assertEqual(entry['contacted_on'], timezone.localdate().isoformat())
+        self.assertEqual(entry['recorded_by'], 'cash')
+
+    def test_follow_up_needs_note_and_no_future_date(self):
+        s = self.sell('Mo', price=100)
+        url = f'/api/debts/{s["debt_id"]}/add_follow_up/'
+        self.assertEqual(self.client.post(url, {'note': '   '}, format='json').status_code, 400)
+        tomorrow = (timezone.localdate() + timedelta(days=1)).isoformat()
+        self.assertEqual(self.client.post(url, {
+            'note': 'x', 'contacted_on': tomorrow}, format='json').status_code, 400)
 
     # --- returns ------------------------------------------------------------
     def test_credit_return_reduces_that_sales_debt(self):

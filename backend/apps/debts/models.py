@@ -117,3 +117,32 @@ class DebtPayment(models.Model):
 
     def __str__(self):
         return f"Payment {self.amount} for {self.debt.party_name}"
+
+
+class DebtFollowUp(models.Model):
+    """
+    A dated note of contact with the party (call, visit, WhatsApp…), kept as a
+    record that we followed up. Entries are never edited or deleted.
+    """
+    METHOD = [
+        ('call', 'Phone call'),
+        ('whatsapp', 'WhatsApp'),
+        ('sms', 'SMS'),
+        ('visit', 'In person'),
+        ('other', 'Other'),
+    ]
+    debt = models.ForeignKey(Debt, on_delete=models.CASCADE, related_name='follow_ups')
+    contacted_on = models.DateField(default=timezone.localdate)
+    method = models.CharField(max_length=20, choices=METHOD, default='call')
+    note = models.TextField()
+    promised_date = models.DateField(null=True, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-contacted_on', '-created_at']
+
+    def __str__(self):
+        return f"Follow-up with {self.debt.party_name} on {self.contacted_on}"

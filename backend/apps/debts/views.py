@@ -8,19 +8,20 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import Debt
-from .serializers import DebtSerializer, RecordPaymentSerializer
+from .serializers import DebtFollowUpSerializer, DebtSerializer, RecordPaymentSerializer
 from . import services
 from apps.accounts.permissions import RoleBasedPermission
 from apps.accounts.audit import log
 
 
 class DebtViewSet(viewsets.ModelViewSet):
-    queryset = Debt.objects.prefetch_related('payments__user', 'charges__user').order_by('-id')
+    queryset = Debt.objects.prefetch_related(
+        'payments__user', 'charges__user', 'follow_ups__user').order_by('-id')
     serializer_class = DebtSerializer
     permission_classes = [IsAuthenticated, RoleBasedPermission]
     allowed_roles = ['admin', 'manager', 'cashier']
     write_roles = ['admin', 'manager']
-    open_write_actions = ['record_payment']   # cashiers can take payments
+    open_write_actions = ['record_payment', 'add_follow_up']   # cashiers can take payments and log contact
 
     def create(self, request, *args, **kwargs):
         """New credit for a party with an open debt is added to that debt."""
@@ -77,6 +78,22 @@ class DebtViewSet(viewsets.ModelViewSet):
         log(request, 'payment', 'Debt', debt.id,
             f'Payment {amount} for {debt.party_name}')
         return Response(DebtSerializer(debt).data)
+
+    @action(detail=True, methods=['post'])
+    def add_follow_up(self, request, pk=None):
+        """Log a contact with the party; a promised date given here becomes the debt's."""
+        debt = self.get_object()
+        serializer = DebtFollowUpSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            follow_up = serializer.save(debt=debt, user=request.user)
+            if follow_up.promised_date:
+                debt.promised_date = follow_up.promised_date
+                debt.save(update_fields=['promised_date'])
+        log(request, 'create', 'Debt', debt.id,
+            f'Follow-up ({follow_up.get_method_display()}) with {debt.party_name}')
+        return Response(DebtSerializer(self.get_queryset().get(pk=debt.pk)).data,
+                        status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['get'])
     def promises(self, request):
