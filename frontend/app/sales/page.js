@@ -52,6 +52,16 @@ export default function SalesPage() {
   };
   useEffect(() => { load(); }, []);
 
+  // Opened from a link such as /sales?sale=12 — show that sale's details
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('sale');
+    if (!id) return;
+    api.get(`/sales/${id}/`)
+      .then((res) => setSelected(res.data))
+      .catch((err) => toast.error(apiError(err, 'Could not open that sale.')));
+    // eslint-disable-next-line
+  }, []);
+
   const addItem = () => setItems([...items, { product: '', quantity: 1, unit_price: 0 }]);
   const removeItem = (i) => setItems(items.filter((_, idx) => idx !== i));
   const updateItem = (i, field, value) => {

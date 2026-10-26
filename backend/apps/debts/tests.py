@@ -200,6 +200,16 @@ class DebtFlowTests(APITestCase):
         s = self.sell('Kim', price=100)
         self.assertEqual(self.client.delete(f'/api/debts/{s["debt_id"]}/').status_code, 400)
 
+    def test_debt_shows_sale_note_and_sale_id(self):
+        res = self.client.post('/api/sales/', {
+            'reference': 'SL-N', 'customer_name': 'Rae', 'amount_paid': 0,
+            'notes': 'Brake pads, will pay end of month',
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 100}],
+        }, format='json')
+        charge = self.client.get(f'/api/debts/{res.data["debt_id"]}/').data['charges'][0]
+        self.assertEqual(charge['sale'], res.data['id'])
+        self.assertEqual(charge['source_notes'], 'Brake pads, will pay end of month')
+
     # --- follow-ups ---------------------------------------------------------
     def test_cashier_can_log_follow_up_and_it_sets_promised_date(self):
         s = self.sell('Lee', phone='0772111222', price=100)

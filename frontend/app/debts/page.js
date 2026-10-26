@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Pagination from '@/components/Pagination';
 import api, { apiError } from '@/lib/api';
@@ -550,7 +551,7 @@ export default function DebtsPage() {
               ))}
             </div>
             {historyTab === 'money' ? (
-              <DebtHistory debt={historyDebt} money={money} />
+              <DebtHistory debt={historyDebt} money={money} canOpenPurchases={canEdit} />
             ) : (
               <>
                 {canPay && (
@@ -672,6 +673,8 @@ function buildHistory(debt) {
     key: `c-${c.id}`, date: c.created_at, change: parseFloat(c.amount),
     label: parseFloat(c.amount) < 0 ? 'Amount reduced' : 'Credit given',
     detail: [c.reference, c.notes].filter(Boolean).join(' — '),
+    sourceNotes: c.source_notes || '',
+    sale: c.sale, purchase: c.purchase,
     by: c.recorded_by,
   }));
   const payments = (debt.payments || []).map((p) => ({
@@ -691,7 +694,7 @@ function buildHistory(debt) {
   return rows.map((r) => ({ ...r, balance: (running += r.change) }));
 }
 
-function DebtHistory({ debt, money, compact = false }) {
+function DebtHistory({ debt, money, compact = false, canOpenPurchases = false }) {
   const rows = buildHistory(debt);
   if (rows.length === 0) return <p className="text-sm text-slate-400">No history yet.</p>;
   return (
@@ -718,6 +721,19 @@ function DebtHistory({ debt, money, compact = false }) {
                   <div className="text-xs text-slate-500">
                     {r.detail}{r.detail && r.by && ' · '}{r.by && `by ${r.by}`}
                   </div>
+                )}
+                {!compact && r.sourceNotes && (
+                  <div className="text-xs text-slate-700 mt-0.5">📝 {r.sourceNotes}</div>
+                )}
+                {!compact && r.sale && (
+                  <Link href={`/sales?sale=${r.sale}`} className="text-xs text-blue-700 hover:underline">
+                    View sale →
+                  </Link>
+                )}
+                {!compact && r.purchase && canOpenPurchases && (
+                  <Link href={`/purchases?purchase=${r.purchase}`} className="text-xs text-blue-700 hover:underline">
+                    View purchase →
+                  </Link>
                 )}
               </td>
               <td className={`px-3 py-2 text-right whitespace-nowrap ${r.change > 0 ? 'text-red-600' : 'text-green-700'}`}>

@@ -43,6 +43,16 @@ export default function PurchasesPage() {
   };
   useEffect(() => { load(); }, []);
 
+  // Opened from a link such as /purchases?purchase=12 — show that purchase's details
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('purchase');
+    if (!id) return;
+    api.get(`/purchases/${id}/`)
+      .then((res) => setSelected(res.data))
+      .catch((err) => toast.error(apiError(err, 'Could not open that purchase.')));
+    // eslint-disable-next-line
+  }, []);
+
   const addItem = () => setItems([...items, { product: '', quantity: 1, unit_cost: 0 }]);
   const removeItem = (i) => setItems(items.filter((_, idx) => idx !== i));
 

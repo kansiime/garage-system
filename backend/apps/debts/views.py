@@ -16,7 +16,8 @@ from apps.accounts.audit import log
 
 class DebtViewSet(viewsets.ModelViewSet):
     queryset = Debt.objects.prefetch_related(
-        'payments__user', 'charges__user', 'follow_ups__user').order_by('-id')
+        'payments__user', 'charges__user', 'charges__sale', 'charges__purchase',
+        'follow_ups__user').order_by('-id')
     serializer_class = DebtSerializer
     permission_classes = [IsAuthenticated, RoleBasedPermission]
     allowed_roles = ['admin', 'manager', 'cashier']

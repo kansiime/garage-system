@@ -15,12 +15,18 @@ class DebtPaymentSerializer(serializers.ModelSerializer):
 class DebtChargeSerializer(serializers.ModelSerializer):
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     recorded_by = serializers.CharField(source='user.username', read_only=True, default='')
+    # Note typed on the sale/purchase the credit came from
+    source_notes = serializers.SerializerMethodField()
 
     class Meta:
         model = DebtCharge
         fields = ['id', 'amount', 'amount_paid', 'balance', 'reference',
-                  'sale', 'purchase', 'notes', 'recorded_by', 'created_at']
+                  'sale', 'purchase', 'source_notes', 'notes', 'recorded_by', 'created_at']
         read_only_fields = fields
+
+    def get_source_notes(self, obj):
+        source = obj.sale or obj.purchase
+        return source.notes if source else ''
 
 
 class DebtFollowUpSerializer(serializers.ModelSerializer):
