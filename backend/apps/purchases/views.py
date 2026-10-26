@@ -64,6 +64,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
             )
         services.record_payment(
             charge.debt_id, amount, user=request.user, prefer_charge_id=charge.id,
+            method=serializer.validated_data['method'],
             notes=serializer.validated_data.get('notes') or f'Payment for purchase {purchase.reference}',
         )
         log(request, 'payment', 'Purchase', purchase.id,

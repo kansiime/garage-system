@@ -46,12 +46,13 @@ class SaleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = [
-            'id', 'reference', 'customer_name', 'customer_phone',
-            'payment_type', 'total_amount', 'amount_paid', 'balance',
+            'id', 'reference', 'customer', 'customer_name', 'customer_phone',
+            'payment_type', 'payment_method', 'paid_at_sale',
+            'total_amount', 'amount_paid', 'balance',
             'debt_balance', 'debt_status', 'debt_id',
             'notes', 'items', 'created_at', 'sale_date',
         ]
-        read_only_fields = ['user', 'created_at', 'total_amount', 'payment_type']
+        read_only_fields = ['user', 'created_at', 'total_amount', 'payment_type', 'paid_at_sale']
 
     def _charge(self, obj):
         charges = list(obj.debt_charges.all())
@@ -95,6 +96,10 @@ class SaleSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'amount_paid': f'Amount paid ({paid:,.2f}) is more than the total ({total:,.2f}).'}
             )
+        if attrs.get('customer'):
+            # Picked from the customer list: the sale records their details
+            attrs['customer_name'] = attrs['customer'].name
+            attrs['customer_phone'] = attrs['customer'].phone
         attrs['customer_name'] = ' '.join((attrs.get('customer_name') or '').split())
         attrs['customer_phone'] = (attrs.get('customer_phone') or '').strip()
         if paid < total and not attrs['customer_name']:
@@ -107,6 +112,7 @@ class SaleSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        from apps.customers.services import find_or_create
         from apps.debts import services
 
         items_data = validated_data.pop('items')
@@ -126,7 +132,12 @@ class SaleSerializer(serializers.ModelSerializer):
             if short:
                 raise serializers.ValidationError({'items': 'Not enough stock: ' + '; '.join(short)})
 
-            sale = Sale.objects.create(total_amount=total, **validated_data)
+            if not validated_data.get('customer'):
+                validated_data['customer'] = find_or_create(
+                    validated_data['customer_name'], validated_data['customer_phone'], user=user)
+            sale = Sale.objects.create(
+                total_amount=total, paid_at_sale=validated_data.get('amount_paid') or 0,
+                **validated_data)
             movement_ids = []
             for item in items_data:
                 product = products[item['product'].id]
@@ -149,6 +160,7 @@ class SaleSerializer(serializers.ModelSerializer):
                     amount=sale.balance,
                     reference=sale.reference,
                     sale=sale,
+                    customer=sale.customer,
                     notes=f'Balance from sale {sale.reference} '
                           f'(total {sale.total_amount:,.2f}, paid {sale.amount_paid:,.2f})',
                     user=user,

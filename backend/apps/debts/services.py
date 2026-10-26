@@ -2,7 +2,8 @@
 All money movement on debts goes through here so the rules live in one place:
 
 * One running debt per party: new credit for a party that already has an
-  unpaid debt of the same type is added to it (matched by phone, else by name).
+  unpaid debt of the same type is added to it (matched by customer for
+  receivables, else by phone, else by name).
 * Payments must be > 0 and <= the outstanding balance.
 * Payments are allocated to the oldest charges first, and charges that came
   from a sale/purchase push the payment back onto that sale/purchase so its
@@ -17,7 +18,7 @@ from decimal import Decimal
 from django.db import transaction
 from rest_framework.exceptions import ValidationError
 
-from .models import Debt, DebtCharge, DebtPayment
+from .models import Debt, DebtCharge, DebtFollowUp, DebtPayment
 
 ZERO = Decimal('0')
 
@@ -40,7 +41,7 @@ def _same_party(debt, name, phone):
     return bool(n_new) and n_new == n_old
 
 
-def find_open_debt(debt_type, name, phone):
+def find_open_debt(debt_type, name, phone, customer=None):
     """Oldest unpaid debt of this type for the same party, locked for update."""
     candidates = (
         Debt.objects.select_for_update()
@@ -48,6 +49,8 @@ def find_open_debt(debt_type, name, phone):
         .exclude(status='paid')
         .order_by('created_at', 'id')
     )
+    if customer is not None:
+        return candidates.filter(customer=customer).first()
     for debt in candidates:
         if _same_party(debt, name, phone):
             return debt
@@ -56,7 +59,8 @@ def find_open_debt(debt_type, name, phone):
 
 @transaction.atomic
 def add_charge(*, debt_type, party_name, party_phone='', amount, reference='',
-               sale=None, purchase=None, notes='', user=None, promised_date=None):
+               sale=None, purchase=None, notes='', user=None, promised_date=None,
+               customer=None):
     """
     Add credit for a party. Returns (debt, merged) where merged=True means the
     amount was added to an existing open debt rather than a new one.
@@ -68,13 +72,18 @@ def add_charge(*, debt_type, party_name, party_phone='', amount, reference='',
     party_phone = (party_phone or '').strip()
     if not party_name:
         raise ValidationError({'party_name': 'A name is required to give credit.'})
+    if debt_type == 'receivable' and customer is None:
+        from apps.customers.services import find_or_create
+        customer = find_or_create(party_name, party_phone, user=user)
+    if customer is not None:
+        party_name, party_phone = customer.name, customer.phone
 
-    debt = find_open_debt(debt_type, party_name, party_phone)
+    debt = find_open_debt(debt_type, party_name, party_phone, customer)
     merged = debt is not None
     if debt is None:
         debt = Debt.objects.create(
             debt_type=debt_type, party_name=party_name, party_phone=party_phone,
-            amount=ZERO, reference=reference, notes=notes, user=user,
+            customer=customer, amount=ZERO, reference=reference, notes=notes, user=user,
             promised_date=promised_date,
         )
     else:
@@ -114,7 +123,7 @@ def _allocate(debt, amount, prefer_charge_id=None):
 
 
 @transaction.atomic
-def record_payment(debt_id, amount, *, user=None, notes='', prefer_charge_id=None):
+def record_payment(debt_id, amount, *, user=None, notes='', method='cash', prefer_charge_id=None):
     """Record a payment against a debt and deduct it from the balance."""
     debt = Debt.objects.select_for_update().get(pk=debt_id)
     amount = Decimal(amount)
@@ -126,11 +135,29 @@ def record_payment(debt_id, amount, *, user=None, notes='', prefer_charge_id=Non
         raise ValidationError(
             {'amount': f'Payment {amount:,.2f} is more than the balance {debt.balance:,.2f}.'}
         )
-    payment = DebtPayment.objects.create(debt=debt, amount=amount, notes=notes, user=user)
+    payment = DebtPayment.objects.create(debt=debt, amount=amount, method=method,
+                                         notes=notes, user=user)
     _allocate(debt, amount, prefer_charge_id)
     debt.amount_paid += amount
     debt.update_status()
     return debt, payment
+
+
+@transaction.atomic
+def merge_debts(keep, other):
+    """Move `other`'s charges, payments and follow-ups onto `keep` and delete `other`."""
+    DebtCharge.objects.filter(debt=other).update(debt=keep)
+    DebtPayment.objects.filter(debt=other).update(debt=keep)
+    DebtFollowUp.objects.filter(debt=other).update(debt=keep)
+    keep.amount += other.amount
+    keep.amount_paid += other.amount_paid
+    if not keep.party_phone and other.party_phone:
+        keep.party_phone = other.party_phone
+    if other.promised_date and (not keep.promised_date or other.promised_date < keep.promised_date):
+        keep.promised_date = other.promised_date
+    other.delete()
+    keep.update_status()
+    return keep
 
 
 @transaction.atomic
@@ -199,5 +226,5 @@ def credit_by_reference(debt_type, reference, amount, *, user=None, notes=''):
     applied = min(Decimal(amount), charge.balance, charge.debt.balance)
     if applied > ZERO:
         record_payment(charge.debt_id, applied, user=user, notes=notes,
-                       prefer_charge_id=charge.id)
+                       method='adjustment', prefer_charge_id=charge.id)
     return applied

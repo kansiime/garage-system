@@ -51,6 +51,8 @@ INSTALLED_APPS = [
     'apps.expenses',
     'apps.returns',
     'apps.reports',
+    'apps.cashup',
+    'apps.customers',
 ]
 
 # ---------------------------------------------------------------------------

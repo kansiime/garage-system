@@ -76,6 +76,7 @@ class DebtViewSet(viewsets.ModelViewSet):
         amount = serializer.validated_data['amount']
         debt, _ = services.record_payment(
             debt.id, amount, user=request.user,
+            method=serializer.validated_data['method'],
             notes=serializer.validated_data.get('notes', ''),
         )
         log(request, 'payment', 'Debt', debt.id,

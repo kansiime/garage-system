@@ -1,14 +1,18 @@
 from django.utils import timezone
 from rest_framework import serializers
+
+from apps.accounts.choices import PAYMENT_METHODS
 from .models import Debt, DebtCharge, DebtFollowUp, DebtPayment
 
 
 class DebtPaymentSerializer(serializers.ModelSerializer):
     recorded_by = serializers.CharField(source='user.username', read_only=True, default='')
+    method_display = serializers.CharField(source='get_method_display', read_only=True)
 
     class Meta:
         model = DebtPayment
-        fields = ['id', 'debt', 'amount', 'notes', 'recorded_by', 'created_at']
+        fields = ['id', 'debt', 'amount', 'method', 'method_display', 'notes',
+                  'recorded_by', 'created_at']
         read_only_fields = ['user', 'created_at']
 
 
@@ -66,12 +70,12 @@ class DebtSerializer(serializers.ModelSerializer):
     class Meta:
         model = Debt
         fields = [
-            'id', 'debt_type', 'party_name', 'party_phone', 'amount',
+            'id', 'debt_type', 'customer', 'party_name', 'party_phone', 'amount',
             'amount_paid', 'balance', 'status', 'reference', 'notes',
             'promised_date', 'promise_status', 'payments', 'charges', 'follow_ups',
             'created_at',
         ]
-        read_only_fields = ['user', 'status', 'amount_paid', 'created_at', 'promise_status']
+        read_only_fields = ['user', 'customer', 'status', 'amount_paid', 'created_at', 'promise_status']
 
     def validate_amount(self, value):
         if value <= 0:
@@ -93,4 +97,5 @@ class DebtSerializer(serializers.ModelSerializer):
 
 class RecordPaymentSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0.01)
+    method = serializers.ChoiceField(choices=PAYMENT_METHODS, default='cash')
     notes = serializers.CharField(required=False, allow_blank=True)

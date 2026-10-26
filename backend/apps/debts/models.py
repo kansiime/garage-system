@@ -2,6 +2,8 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 
+from apps.accounts.choices import PAYMENT_METHODS
+
 
 class Debt(models.Model):
     """
@@ -23,6 +25,11 @@ class Debt(models.Model):
     debt_type = models.CharField(max_length=20, choices=DEBT_TYPE)
     party_name = models.CharField(max_length=200)
     party_phone = models.CharField(max_length=50, blank=True)
+    # Set on receivables; party_name/party_phone mirror the customer
+    customer = models.ForeignKey(
+        'customers.Customer', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='debts',
+    )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     status = models.CharField(max_length=20, choices=STATUS, default='open')
@@ -102,10 +109,14 @@ class DebtCharge(models.Model):
 
 
 class DebtPayment(models.Model):
+    # 'adjustment' moves no money (e.g. goods returned against a credit sale)
+    METHODS = PAYMENT_METHODS + [('adjustment', 'Adjustment (no money)')]
+
     debt = models.ForeignKey(
         Debt, on_delete=models.CASCADE, related_name='payments'
     )
     amount = models.DecimalField(max_digits=14, decimal_places=2)
+    method = models.CharField(max_length=20, choices=METHODS, default='cash')
     notes = models.TextField(blank=True)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True

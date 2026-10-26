@@ -275,7 +275,7 @@ class DebtFlowTests(APITestCase):
     # --- reports ------------------------------------------------------------
     def test_customer_balance_not_double_counted(self):
         self.sell('Nia', phone='0772555555', paid=40, price=100)
-        res = self.client.get('/api/reports/customers/')
+        res = self.client.get('/api/customers/')
         nia = [c for c in res.data['customers'] if c['name'] == 'Nia'][0]
         self.assertEqual(nia['balance'], 60)
 

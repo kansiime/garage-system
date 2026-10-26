@@ -28,4 +28,8 @@ export const can = {
   createReturns: (u) => hasRole(u, 'admin', 'manager', 'storekeeper'),
   recordPayment: (u) => hasRole(u, 'admin', 'manager', 'cashier'),
   paySuppliers: (u) => hasRole(u, 'admin', 'manager'),
+  cashUp: (u) => hasRole(u, 'admin', 'manager', 'cashier'),
+  backdateCashUp: (u) => hasRole(u, 'admin', 'manager'),
+  deleteCashUp: (u) => hasRole(u, 'admin'),
+  editCustomers: (u) => hasRole(u, 'admin', 'manager'),
 };

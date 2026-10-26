@@ -55,6 +55,7 @@ export default function Navbar() {
   ];
 
   const optional = [
+    { href: '/cashup',         label: 'Cash-up',   icon: '💵', show: can.cashUp(user) },
     { href: '/expenses',       label: 'Expenses',  icon: '💸', show: can.viewExpenses(user) },
     { href: '/returns',        label: 'Returns',   icon: '↩️', show: can.createReturns(user) || can.editDebts(user) },
     { href: '/reconciliation', label: 'Recon',     icon: '⚖️', show: can.reconcile(user) },

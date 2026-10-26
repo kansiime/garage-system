@@ -3,11 +3,14 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Pagination from '@/components/Pagination';
-import api from '@/lib/api';
+import api, { apiError } from '@/lib/api';
+import { useToast } from '@/components/Toast';
 import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 
 export default function CustomersPage() {
+  const toast = useToast();
+  const [adding, setAdding] = useState(null);
   const [data, setData] = useState({ customers: [], currency: 'UGX' });
   const [search, setSearch] = useState('');
   const [pageSize, setPageSize] = useState(10);
@@ -17,7 +20,7 @@ export default function CustomersPage() {
     setLoading(true);
     try {
       const q = search.trim() ? `?search=${encodeURIComponent(search.trim())}` : '';
-      const res = await api.get(`/reports/customers/${q}`);
+      const res = await api.get(`/customers/${q}`);
       setData(res.data);
     } catch {
       setData({ customers: [], currency: 'UGX' });
@@ -46,7 +49,7 @@ export default function CustomersPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-900">Customers</h1>
         <p className="text-sm text-slate-500 mt-1">
-          All customers derived from your sales and debts. Click any name to see their full history.
+          Everyone you have sold to. Customers are added automatically from sales, or add one here. Click a name to see their full history.
         </p>
       </div>
 
@@ -65,6 +68,43 @@ export default function CustomersPage() {
           <p className="stat-value">{money(totalSpentAll)}</p>
         </div>
       </div>
+
+      {adding ? (
+        <form className="card mb-4" onSubmit={async (e) => {
+          e.preventDefault();
+          try {
+            await api.post('/customers/', adding);
+            toast.success(`${adding.name} added`);
+            setAdding(null);
+            load();
+          } catch (err) {
+            toast.error(apiError(err, 'Could not add customer.'));
+          }
+        }}>
+          <p className="card-title">New Customer</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div><label>Name</label>
+              <input value={adding.name} required autoFocus
+                onChange={(e) => setAdding({ ...adding, name: e.target.value })} /></div>
+            <div><label>Phone</label>
+              <input value={adding.phone}
+                onChange={(e) => setAdding({ ...adding, phone: e.target.value })} /></div>
+            <div><label>Notes</label>
+              <input value={adding.notes} placeholder="e.g. Vehicle, where they work…"
+                onChange={(e) => setAdding({ ...adding, notes: e.target.value })} /></div>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" className="btn btn-secondary" onClick={() => setAdding(null)}>Cancel</button>
+            <button className="btn btn-primary">Save Customer</button>
+          </div>
+        </form>
+      ) : (
+        <div className="mb-4 flex justify-end">
+          <button className="btn btn-primary" onClick={() => setAdding({ name: '', phone: '', notes: '' })}>
+            + New Customer
+          </button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="card mb-4">
@@ -114,9 +154,9 @@ export default function CustomersPage() {
               </tr>
             )}
             {pg.pageItems.map((c) => (
-              <tr key={c.key}>
+              <tr key={c.id}>
                 <td>
-                  <Link href={`/customers/${encodeURIComponent(c.key)}`}
+                  <Link href={`/customers/${c.id}`}
                     className="font-medium text-blue-700 hover:underline">
                     {c.name}
                   </Link>
@@ -129,7 +169,7 @@ export default function CustomersPage() {
                 </td>
                 <td className="text-sm text-slate-500">{c.last_visit}</td>
                 <td className="text-right">
-                  <Link href={`/customers/${encodeURIComponent(c.key)}`}
+                  <Link href={`/customers/${c.id}`}
                     className="btn btn-secondary btn-sm">
                     View →
                   </Link>

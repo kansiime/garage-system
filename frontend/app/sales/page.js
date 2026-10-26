@@ -10,6 +10,8 @@ import { usePagination } from '@/lib/usePagination';
 import { useToast } from '@/components/Toast';
 import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
 import { useUser, can } from '@/lib/useUser';
+import { PAYMENT_METHODS, methodLabel } from '@/lib/paymentMethods';
+import CustomerNameInput from '@/components/CustomerNameInput';
 
 const todayISO = () => {
   const d = new Date();
@@ -25,8 +27,8 @@ export default function SalesPage() {
   const [settings, setSettings] = useState({});
   const [currency, setCurrency] = useState('UGX');
   const [form, setForm] = useState({
-    reference: '', customer_name: '', customer_phone: '',
-    payment_type: 'cash', amount_paid: '', notes: '', sale_date: '',
+    reference: '', customer: null, customer_name: '', customer_phone: '',
+    payment_type: 'cash', payment_method: 'cash', amount_paid: '', notes: '', sale_date: '',
   });
   const [items, setItems] = useState([{ product: '', quantity: 1, unit_price: 0 }]);
   const [error, setError] = useState('');
@@ -93,8 +95,8 @@ export default function SalesPage() {
 
   const resetForm = () => {
     setForm({
-      reference: generateRef(), customer_name: '', customer_phone: '',
-      payment_type: 'cash', amount_paid: '', notes: '', sale_date: '',
+      reference: generateRef(), customer: null, customer_name: '', customer_phone: '',
+      payment_type: 'cash', payment_method: 'cash', amount_paid: '', notes: '', sale_date: '',
     });
     setItems([{ product: '', quantity: 1, unit_price: 0 }]);
   };
@@ -251,11 +253,16 @@ export default function SalesPage() {
           <div><label>Reference</label>
             <input value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} required /></div>
           <div><label>Customer Name{form.payment_type !== 'cash' && ' *'}</label>
-            <input placeholder={form.payment_type === 'cash' ? 'Walk-in' : 'Required for credit'}
+            <CustomerNameInput
+              placeholder={form.payment_type === 'cash' ? 'Walk-in' : 'Required for credit'}
               required={form.payment_type !== 'cash'} value={form.customer_name}
-              onChange={(e) => setForm({ ...form, customer_name: e.target.value })} /></div>
+              picked={!!form.customer}
+              onType={(text) => setForm({ ...form, customer: null, customer_name: text })}
+              onPick={(c) => setForm({ ...form, customer: c.id, customer_name: c.name, customer_phone: c.phone || '' })}
+              onClear={() => setForm({ ...form, customer: null, customer_name: '', customer_phone: '' })} /></div>
           <div><label>Customer Phone</label>
-            <input placeholder="Optional" value={form.customer_phone}
+            <input placeholder="Optional" value={form.customer_phone} readOnly={!!form.customer}
+              title={form.customer ? 'Change the phone on the Customers page' : undefined}
               onChange={(e) => setForm({ ...form, customer_phone: e.target.value })} /></div>
           <div><label>Payment Type</label>
             <select value={form.payment_type} onChange={(e) => setForm({ ...form, payment_type: e.target.value })}>
@@ -266,6 +273,12 @@ export default function SalesPage() {
           <div><label>Amount Paid</label>
             <input type="number" step="0.01" min="0" placeholder="0" value={form.amount_paid}
               onChange={(e) => setForm({ ...form, amount_paid: e.target.value })} /></div>
+          {form.payment_type !== 'credit' && (
+            <div><label>Paid By</label>
+              <select value={form.payment_method} onChange={(e) => setForm({ ...form, payment_method: e.target.value })}>
+                {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select></div>
+          )}
           <div><label>Notes</label>
             <input placeholder="Optional" value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
@@ -459,7 +472,9 @@ export default function SalesPage() {
               <div>
                 <h3 className="text-lg font-bold font-mono">{selected.reference}</h3>
                 <p className="text-sm text-slate-500">
-                  {selected.customer_name || 'Walk-in'}
+                  {selected.customer
+                    ? <Link href={`/customers/${selected.customer}`} className="text-blue-700 hover:underline">{selected.customer_name}</Link>
+                    : (selected.customer_name || 'Walk-in')}
                   {selected.customer_phone && ` · ${selected.customer_phone}`}
                   {' · '}{new Date(selected.created_at).toLocaleString()}
                 </p>
@@ -509,6 +524,11 @@ export default function SalesPage() {
 
             {showProfit && (
               <p className="text-sm text-slate-600 mb-2"><b>Profit on this sale:</b> {money(profit)}</p>
+            )}
+            {parseFloat(selected.paid_at_sale) > 0 && (
+              <p className="text-sm text-slate-600 mb-2">
+                <b>Paid at sale:</b> {money(selected.paid_at_sale)} by {methodLabel(selected.payment_method)}
+              </p>
             )}
             {selected.notes && (
               <p className="text-sm text-slate-600 mb-2"><b>Notes:</b> {selected.notes}</p>

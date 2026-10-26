@@ -6,6 +6,7 @@ import ProductPicker from '@/components/ProductPicker';
 import { formatMoney } from '@/lib/format';
 import { useUser, can } from '@/lib/useUser';
 import { useToast } from '@/components/Toast';
+import { PAYMENT_METHODS, methodLabel } from '@/lib/paymentMethods';
 
 export default function PurchasesPage() {
   const user = useUser();
@@ -20,13 +21,14 @@ export default function PurchasesPage() {
     supplier: '',
     status: 'pending',
     amount_paid: '',
+    payment_method: 'cash',
     notes: '',
   });
   const [items, setItems] = useState([{ product: '', quantity: 1, unit_cost: 0 }]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState(null);
-  const [payment, setPayment] = useState({ amount: '', notes: '' });
+  const [payment, setPayment] = useState({ amount: '', method: 'cash', notes: '' });
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -118,7 +120,7 @@ export default function PurchasesPage() {
 
   const openPurchase = (p) => {
     setSelected(p);
-    setPayment({ amount: '', notes: '' });
+    setPayment({ amount: '', method: 'cash', notes: '' });
   };
 
   // Keep the open purchase and the list in step after a change
@@ -150,10 +152,11 @@ export default function PurchasesPage() {
     try {
       const res = await api.post(`/purchases/${selected.id}/pay/`, {
         amount: parseFloat(payment.amount),
+        method: payment.method,
         notes: payment.notes,
       });
       applyUpdate(res.data);
-      setPayment({ amount: '', notes: '' });
+      setPayment({ amount: '', method: 'cash', notes: '' });
       const left = parseFloat(res.data.balance);
       toast.success(left > 0
         ? `Payment of ${money(payment.amount)} recorded — ${money(left)} still owed`
@@ -232,6 +235,15 @@ export default function PurchasesPage() {
               onChange={(e) => setForm({ ...form, amount_paid: e.target.value })}
             />
           </div>
+          {parseFloat(form.amount_paid) > 0 && (
+            <div>
+              <label>Paid By</label>
+              <select value={form.payment_method}
+                onChange={(e) => setForm({ ...form, payment_method: e.target.value })}>
+                {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select>
+            </div>
+          )}
           <div className="md:col-span-2">
             <label>Notes</label>
             <input
@@ -422,6 +434,11 @@ export default function PurchasesPage() {
               </div>
             </div>
 
+            {parseFloat(selected.paid_at_purchase) > 0 && (
+              <p className="text-sm text-slate-600 mb-2">
+                <b>Paid when recorded:</b> {money(selected.paid_at_purchase)} by {methodLabel(selected.payment_method)}
+              </p>
+            )}
             {selected.notes && (
               <p className="text-sm text-slate-600 mb-4"><b>Notes:</b> {selected.notes}</p>
             )}
@@ -454,8 +471,13 @@ export default function PurchasesPage() {
                       value={payment.amount}
                       onChange={(e) => setPayment({ ...payment, amount: e.target.value })}
                       required /></div>
-                  <div><label>Notes</label>
-                    <input placeholder="e.g. Mobile money, cash…" value={payment.notes}
+                  <div><label>Paid By</label>
+                    <select value={payment.method}
+                      onChange={(e) => setPayment({ ...payment, method: e.target.value })}>
+                      {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                    </select></div>
+                  <div className="md:col-span-2"><label>Notes</label>
+                    <input placeholder="e.g. Transaction ID, who paid…" value={payment.notes}
                       onChange={(e) => setPayment({ ...payment, notes: e.target.value })} /></div>
                 </div>
                 <div className="mb-3 flex items-center justify-between text-sm">

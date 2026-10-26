@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from apps.accounts.choices import PAYMENT_METHODS
 from apps.inventory.models import Product
 
 
@@ -12,7 +13,16 @@ class Sale(models.Model):
     reference = models.CharField(max_length=50, unique=True)
     customer_name = models.CharField(max_length=200, blank=True)
     customer_phone = models.CharField(max_length=20, blank=True)
+    # customer_name/customer_phone keep what was on the sale at the time
+    customer = models.ForeignKey(
+        'customers.Customer', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='sales',
+    )
     payment_type = models.CharField(max_length=20, choices=PAYMENT, default='cash')
+    # Money taken at the counter when the sale was made, and how it was paid.
+    # amount_paid also grows with later debt payments; paid_at_sale does not.
+    paid_at_sale = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHODS, default='cash')
     total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     notes = models.TextField(blank=True)

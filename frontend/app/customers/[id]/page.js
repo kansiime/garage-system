@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import ProtectedRoute from '@/components/ProtectedRoute';
-import api from '@/lib/api';
+import api, { apiError } from '@/lib/api';
+import { useUser, can } from '@/lib/useUser';
 import { formatMoney } from '@/lib/format';
 import { useToast } from '@/components/Toast';
 import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
@@ -12,26 +13,41 @@ export default function CustomerDetailPage() {
   const params = useParams();
   const router = useRouter();
   const toast = useToast();
-  const key = decodeURIComponent(params.key || '');
+  const user = useUser();
+  const id = params.id;
 
   const [data, setData] = useState(null);
   const [settings, setSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [merging, setMerging] = useState(null);
 
+  const load = () => Promise.all([
+    api.get(`/customers/${id}/`),
+    api.get('/auth/settings/'),
+  ])
+    .then(([cust, gs]) => {
+      setData(cust.data);
+      setSettings(gs.data);
+    })
+    .catch(() => setError('Could not load customer.'))
+    .finally(() => setLoading(false));
+
+  useEffect(() => { setLoading(true); load(); /* eslint-disable-next-line */ }, [id]);
+
+  // Search for the duplicate to merge in
   useEffect(() => {
-    setLoading(true);
-    Promise.all([
-      api.get(`/reports/customers/${encodeURIComponent(key)}/`),
-      api.get('/auth/settings/'),
-    ])
-      .then(([cust, gs]) => {
-        setData(cust.data);
-        setSettings(gs.data);
-      })
-      .catch(() => setError('Could not load customer.'))
-      .finally(() => setLoading(false));
-  }, [key]);
+    const q = (merging?.search || '').trim();
+    if (!merging || q.length < 2) return;
+    const t = setTimeout(() => {
+      api.get(`/customers/?search=${encodeURIComponent(q)}`)
+        .then((res) => setMerging((m) => m && ({
+          ...m, results: res.data.customers.filter((c) => String(c.id) !== String(id)),
+        })));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [merging?.search, id]);
 
   if (loading) {
     return (
@@ -56,6 +72,30 @@ export default function CustomerDetailPage() {
 
   const money = (n) => formatMoney(n, data.currency);
   const s = data.summary;
+
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    try {
+      await api.patch(`/customers/${id}/`, editing);
+      toast.success('Customer updated');
+      setEditing(null);
+      load();
+    } catch (err) {
+      toast.error(apiError(err, 'Could not update customer.'));
+    }
+  };
+
+  const mergeIn = async (other) => {
+    if (!confirm(`Merge "${other.name}" into "${data.name}"?\n\nTheir sales, debts and notes move here and "${other.name}" is removed. This cannot be undone.`)) return;
+    try {
+      const res = await api.post(`/customers/${id}/merge/`, { other: other.id });
+      setData(res.data);
+      setMerging(null);
+      toast.success(`${other.name} merged into ${data.name}`);
+    } catch (err) {
+      toast.error(apiError(err, 'Could not merge customers.'));
+    }
+  };
 
   const sendWhatsApp = () => {
     if (!data.phone) {
@@ -87,6 +127,7 @@ export default function CustomerDetailPage() {
           <p className="text-sm text-slate-500 mt-1">
             {data.phone ? `📞 ${data.phone}` : 'No phone on file'}
           </p>
+          {data.notes && <p className="text-sm text-slate-600 mt-1 whitespace-pre-wrap">{data.notes}</p>}
         </div>
 
         <div className="flex gap-2 flex-wrap">
@@ -100,11 +141,80 @@ export default function CustomerDetailPage() {
               📞 Call
             </a>
           )}
-          <Link href="/debts" className="btn btn-secondary">
+          {can.editCustomers(user) && (
+            <button className="btn btn-secondary"
+              onClick={() => setEditing({ name: data.name, phone: data.phone || '', notes: data.notes || '' })}>
+              ✏️ Edit
+            </button>
+          )}
+          {can.editCustomers(user) && (
+            <button className="btn btn-secondary" onClick={() => setMerging({ search: '', results: [] })}>
+              🔗 Merge duplicate
+            </button>
+          )}
+          <Link href={`/debts?search=${encodeURIComponent(data.phone || data.name)}`} className="btn btn-secondary">
             View in Debts →
           </Link>
         </div>
       </div>
+
+      {editing && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <form onSubmit={saveEdit} className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6">
+            <h3 className="text-lg font-bold mb-4">Edit Customer</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div><label>Name</label>
+                <input value={editing.name} required
+                  onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></div>
+              <div><label>Phone</label>
+                <input value={editing.phone}
+                  onChange={(e) => setEditing({ ...editing, phone: e.target.value })} /></div>
+              <div className="md:col-span-2"><label>Notes</label>
+                <textarea rows={3} value={editing.notes}
+                  onChange={(e) => setEditing({ ...editing, notes: e.target.value })} /></div>
+            </div>
+            <p className="text-xs text-slate-500 mt-2">Their debts update too. Past sales keep the details they were made with.</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
+              <button className="btn btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {merging && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onClick={() => setMerging(null)}>
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-bold mb-1">Merge a duplicate into {data.name}</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              Find the same person entered under another name or number. Everything of theirs moves to {data.name}.
+            </p>
+            <input placeholder="Search name or phone…" autoFocus value={merging.search}
+              onChange={(e) => setMerging({ ...merging, search: e.target.value })} />
+            <ul className="mt-3 max-h-72 overflow-y-auto divide-y divide-slate-100">
+              {merging.search.trim().length >= 2 && merging.results.length === 0 && (
+                <li className="py-2 text-sm text-slate-400">No other customers found.</li>
+              )}
+              {merging.results.map((c) => (
+                <li key={c.id} className="py-2 flex items-center justify-between gap-2">
+                  <div className="text-sm">
+                    <div className="font-medium">{c.name}</div>
+                    <div className="text-xs text-slate-500">
+                      {c.phone || 'No phone'} · {c.sale_count} sale{c.sale_count !== 1 && 's'}
+                      {c.balance > 0 && ` · owes ${money(c.balance)}`}
+                    </div>
+                  </div>
+                  <button className="btn btn-primary btn-sm" onClick={() => mergeIn(c)}>Merge in</button>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 flex justify-end">
+              <button className="btn btn-secondary" onClick={() => setMerging(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -225,6 +335,7 @@ export default function CustomerDetailPage() {
                 <tr>
                   <th>Date</th>
                   <th className="text-right">Amount</th>
+                  <th>Paid by</th>
                   <th>Notes</th>
                 </tr>
               </thead>
@@ -233,6 +344,7 @@ export default function CustomerDetailPage() {
                   <tr key={p.id}>
                     <td className="text-sm text-slate-600 whitespace-nowrap">{p.date}</td>
                     <td className="text-right font-semibold text-green-700">{money(p.amount)}</td>
+                    <td className="text-sm">{p.method_display}</td>
                     <td className="text-sm text-slate-500">{p.notes || '—'}</td>
                   </tr>
                 ))}

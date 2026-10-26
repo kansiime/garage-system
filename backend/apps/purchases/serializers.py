@@ -45,9 +45,10 @@ class PurchaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Purchase
         fields = ['id', 'reference', 'supplier', 'supplier_name', 'status',
-                  'total_amount', 'amount_paid', 'balance', 'notes',
+                  'total_amount', 'amount_paid', 'paid_at_purchase', 'payment_method',
+                  'balance', 'notes',
                   'items', 'created_at']
-        read_only_fields = ['user', 'created_at', 'total_amount']
+        read_only_fields = ['user', 'created_at', 'total_amount', 'paid_at_purchase']
 
     def validate(self, attrs):
         if self.instance is None:
@@ -75,7 +76,9 @@ class PurchaseSerializer(serializers.ModelSerializer):
         items_data = validated_data.pop('items')
         total = validated_data.pop('_total')
         with transaction.atomic():
-            purchase = Purchase.objects.create(total_amount=total, **validated_data)
+            purchase = Purchase.objects.create(
+                total_amount=total, paid_at_purchase=validated_data.get('amount_paid') or 0,
+                **validated_data)
             for item in items_data:
                 PurchaseItem.objects.create(purchase=purchase, **item)
             if purchase.status == 'received':
@@ -99,7 +102,7 @@ class PurchaseSerializer(serializers.ModelSerializer):
         Only status and notes can change after creation. Items/amounts are
         locked because stock and the supplier debt were already booked.
         """
-        locked = {'items', 'amount_paid', 'supplier', 'reference'} & set(validated_data)
+        locked = {'items', 'amount_paid', 'payment_method', 'supplier', 'reference'} & set(validated_data)
         changed = [f for f in locked
                    if f == 'items' or validated_data[f] != getattr(instance, f)]
         if changed:

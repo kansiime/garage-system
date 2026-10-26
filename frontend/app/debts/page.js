@@ -9,6 +9,7 @@ import { usePagination } from '@/lib/usePagination';
 import { useUser, can } from '@/lib/useUser';
 import { useToast } from '@/components/Toast';
 import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
+import { PAYMENT_METHODS } from '@/lib/paymentMethods';
 
 const todayISO = () => {
   const d = new Date();
@@ -127,6 +128,7 @@ export default function DebtsPage() {
     try {
       const res = await api.post(`/debts/${paymentModal.debt.id}/record_payment/`, {
         amount: parseFloat(paymentModal.amount),
+        method: paymentModal.method,
         notes: paymentModal.notes,
       });
       const left = parseFloat(res.data.balance);
@@ -399,7 +401,11 @@ export default function DebtsPage() {
                   <td className="whitespace-nowrap text-sm text-slate-600">{new Date(d.created_at).toLocaleDateString()}</td>
                   <td><span className={d.debt_type === 'receivable' ? 'badge badge-amber' : 'badge badge-red'}>{d.debt_type}</span></td>
                   <td>
-                    <div className="font-medium">{d.party_name}</div>
+                    <div className="font-medium">
+                      {d.customer
+                        ? <Link href={`/customers/${d.customer}`} className="hover:underline">{d.party_name}</Link>
+                        : d.party_name}
+                    </div>
                     {d.follow_ups?.length > 0 && (
                       <div className="text-xs text-slate-400" title={d.follow_ups[0].note}>
                         Last contact {d.follow_ups[0].contacted_on}
@@ -432,7 +438,7 @@ export default function DebtsPage() {
                     </button>
                     {canPay && d.status !== 'paid' && (
                       <button className="btn btn-primary btn-sm mr-1"
-                        onClick={() => setPaymentModal({ debt: d, amount: '', notes: '' })}>
+                        onClick={() => setPaymentModal({ debt: d, amount: '', method: 'cash', notes: '' })}>
                         Record Payment
                       </button>
                     )}
@@ -498,9 +504,16 @@ export default function DebtsPage() {
                     : <span className="text-slate-600">Remaining after this: <b>{money(left)}</b></span>
                 )}
               </div>
-              <div className="mb-4"><label>Notes</label>
-                <input placeholder="e.g. Mobile money, cash, paid by brother…" value={paymentModal.notes}
-                  onChange={(e) => setPaymentModal({ ...paymentModal, notes: e.target.value })} /></div>
+              <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div><label>Paid By</label>
+                  <select value={paymentModal.method}
+                    onChange={(e) => setPaymentModal({ ...paymentModal, method: e.target.value })}>
+                    {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select></div>
+                <div className="md:col-span-2"><label>Notes</label>
+                  <input placeholder="e.g. Transaction ID, paid by brother…" value={paymentModal.notes}
+                    onChange={(e) => setPaymentModal({ ...paymentModal, notes: e.target.value })} /></div>
+              </div>
               <div className="flex justify-end gap-2">
                 <button type="button" className="btn btn-secondary" onClick={() => setPaymentModal(null)}>Cancel</button>
                 <button type="submit" className="btn btn-primary" disabled={paying <= 0 || left < 0}>
@@ -591,7 +604,7 @@ export default function DebtsPage() {
             <div className="mt-5 flex justify-end gap-2">
               {canPay && historyDebt.status !== 'paid' && (
                 <button className="btn btn-primary" onClick={() => {
-                  setPaymentModal({ debt: historyDebt, amount: '', notes: '' });
+                  setPaymentModal({ debt: historyDebt, amount: '', method: 'cash', notes: '' });
                   setHistoryDebt(null);
                 }}>Record Payment</button>
               )}
@@ -679,7 +692,8 @@ function buildHistory(debt) {
   }));
   const payments = (debt.payments || []).map((p) => ({
     key: `p-${p.id}`, date: p.created_at, change: -parseFloat(p.amount),
-    label: 'Payment', detail: p.notes || '', by: p.recorded_by,
+    label: p.method === 'adjustment' ? 'Return credited' : `Payment · ${p.method_display}`,
+    detail: p.notes || '', by: p.recorded_by,
   }));
   const recorded = payments.reduce((t, p) => t - p.change, 0);
   const unrecorded = parseFloat(debt.amount_paid) - recorded;
