@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from apps.debts.models import Debt, DebtCharge, DebtPayment
+from apps.debts.models import Debt, DebtCharge, DebtFollowUp, DebtPayment
 from apps.debts.services import _same_party
 
 
@@ -39,6 +39,7 @@ class Command(BaseCommand):
                 for d in others:
                     DebtCharge.objects.filter(debt=d).update(debt=keep)
                     DebtPayment.objects.filter(debt=d).update(debt=keep)
+                    DebtFollowUp.objects.filter(debt=d).update(debt=keep)
                     keep.amount += d.amount
                     keep.amount_paid += d.amount_paid
                     if not keep.party_phone and d.party_phone:

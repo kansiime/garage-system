@@ -122,7 +122,8 @@ class DebtPayment(models.Model):
 class DebtFollowUp(models.Model):
     """
     A dated note of contact with the party (call, visit, WhatsApp…), kept as a
-    record that we followed up. Entries are never edited or deleted.
+    record that we followed up. Entries are never edited or deleted, and a
+    debt that has follow-ups cannot be deleted (PROTECT).
     """
     METHOD = [
         ('call', 'Phone call'),
@@ -131,7 +132,7 @@ class DebtFollowUp(models.Model):
         ('visit', 'In person'),
         ('other', 'Other'),
     ]
-    debt = models.ForeignKey(Debt, on_delete=models.CASCADE, related_name='follow_ups')
+    debt = models.ForeignKey(Debt, on_delete=models.PROTECT, related_name='follow_ups')
     contacted_on = models.DateField(default=timezone.localdate)
     method = models.CharField(max_length=20, choices=METHOD, default='call')
     note = models.TextField()

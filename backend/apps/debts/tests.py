@@ -222,6 +222,23 @@ class DebtFlowTests(APITestCase):
         tomorrow = (timezone.localdate() + timedelta(days=1)).isoformat()
         self.assertEqual(self.client.post(url, {
             'note': 'x', 'contacted_on': tomorrow}, format='json').status_code, 400)
+        yesterday = (timezone.localdate() - timedelta(days=1)).isoformat()
+        self.assertEqual(self.client.post(url, {
+            'note': 'x', 'promised_date': yesterday}, format='json').status_code, 400)
+
+    def test_debt_with_follow_ups_is_kept(self):
+        self.client.force_authenticate(self.admin)
+        manual = self.client.post('/api/debts/', {
+            'debt_type': 'receivable', 'party_name': 'Pat', 'amount': 50}, format='json').data
+        self.client.post(f'/api/debts/{manual["id"]}/add_follow_up/', {'note': 'Called'}, format='json')
+        self.assertEqual(self.client.delete(f'/api/debts/{manual["id"]}/').status_code, 400)
+
+        s = self.sell('Quin', price=100)
+        self.client.post(f'/api/debts/{s["debt_id"]}/add_follow_up/', {'note': 'Called'}, format='json')
+        self.assertEqual(self.client.delete(f'/api/sales/{s["id"]}/').status_code, 204)
+        debt = Debt.objects.get(pk=s['debt_id'])
+        self.assertEqual(debt.balance, 0)
+        self.assertEqual(debt.follow_ups.count(), 1)
 
     # --- returns ------------------------------------------------------------
     def test_credit_return_reduces_that_sales_debt(self):

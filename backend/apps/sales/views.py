@@ -49,7 +49,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 debt = Debt.objects.select_for_update().get(pk=charge.debt_id)
                 debt.amount -= charge.amount
                 charge.delete()
-                if debt.amount <= 0 and not debt.payments.exists():
+                if debt.amount <= 0 and not debt.payments.exists() and not debt.follow_ups.exists():
                     debt.delete()
                 else:
                     debt.update_status()

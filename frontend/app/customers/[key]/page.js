@@ -189,6 +189,32 @@ export default function CustomerDetailPage() {
         )}
       </div>
 
+      {/* Follow-up notes */}
+      {data.follow_ups?.length > 0 && (
+        <div className="card mb-6">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <p className="card-title mb-0">Follow-up Notes ({data.follow_ups.length})</p>
+            <Link href={`/debts?search=${encodeURIComponent(data.phone || data.name)}`} className="text-sm text-blue-700 hover:underline">
+              Add a note →
+            </Link>
+          </div>
+          <ul className="divide-y divide-slate-100">
+            {data.follow_ups.map((f) => (
+              <li key={f.id} className="py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{f.contacted_on} · {f.method_display}</span>
+                  {f.promised_date && <span className="badge badge-amber">Promised {f.promised_date}</span>}
+                </div>
+                <p className="mt-1 whitespace-pre-wrap text-slate-700">{f.note}</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  Logged {f.logged_at}{f.recorded_by && ` by ${f.recorded_by}`}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Payment history */}
       {data.payments.length > 0 && (
         <div className="card mb-6">

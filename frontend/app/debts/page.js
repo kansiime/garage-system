@@ -15,7 +15,9 @@ const todayISO = () => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
-const emptyFollowUp = () => ({ contacted_on: todayISO(), method: 'call', note: '', promised_date: '' });
+const emptyFollowUp = (fields = {}) => ({
+  contacted_on: todayISO(), method: 'call', note: '', promised_date: '', ...fields,
+});
 
 export default function DebtsPage() {
   const user = useUser();
@@ -137,10 +139,19 @@ export default function DebtsPage() {
     }
   };
 
-  const openHistory = (debt, tab) => {
+  const openHistory = (debt, tab, followUpFields) => {
     setHistoryDebt(debt);
     setHistoryTab(tab);
-    setFollowUp(emptyFollowUp());
+    setFollowUp(emptyFollowUp(followUpFields));
+  };
+
+  // Send the reminder, then leave the note ready to save as a record of it
+  const remindAndLog = (debt) => {
+    sendWhatsApp(debt, debt.promise_status === 'due_today' ? 'due_today' : 'debt');
+    openHistory(debt, 'notes', {
+      method: 'whatsapp',
+      note: `Sent WhatsApp reminder for balance of ${money(debt.balance)}.`,
+    });
   };
 
   const saveFollowUp = async (e) => {
@@ -406,7 +417,7 @@ export default function DebtsPage() {
                   <td className="text-right whitespace-nowrap">
                     {d.party_phone && d.status !== 'paid' && (
                       <button className="btn btn-success btn-sm mr-1"
-                        onClick={() => sendWhatsApp(d, d.promise_status === 'due_today' ? 'due_today' : 'debt')}
+                        onClick={() => remindAndLog(d)}
                         title="Send WhatsApp reminder">
                         💬
                       </button>

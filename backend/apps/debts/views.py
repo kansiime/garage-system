@@ -61,6 +61,8 @@ class DebtViewSet(viewsets.ModelViewSet):
             raise ValidationError({'detail': 'This debt has payments recorded and cannot be deleted.'})
         if instance.charges.filter(Q(sale__isnull=False) | Q(purchase__isnull=False)).exists():
             raise ValidationError({'detail': 'This debt comes from a sale or purchase and cannot be deleted. Record a return instead.'})
+        if instance.follow_ups.exists():
+            raise ValidationError({'detail': 'This debt has follow-up notes and cannot be deleted.'})
         log(self.request, 'delete', 'Debt', instance.id,
             f'Deleted debt {instance.amount} for {instance.party_name}')
         instance.delete()

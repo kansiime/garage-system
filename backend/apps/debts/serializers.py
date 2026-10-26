@@ -44,6 +44,11 @@ class DebtFollowUpSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('The contact date cannot be in the future.')
         return value
 
+    def validate_promised_date(self, value):
+        if value and value < timezone.localdate():
+            raise serializers.ValidationError('The promised date cannot be in the past.')
+        return value
+
 
 class DebtSerializer(serializers.ModelSerializer):
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)

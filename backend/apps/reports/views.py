@@ -12,7 +12,7 @@ from rest_framework.response import Response
 
 from apps.sales.models import Sale, SaleItem
 from apps.purchases.models import Purchase
-from apps.debts.models import Debt
+from apps.debts.models import Debt, DebtFollowUp
 from apps.inventory.models import Product
 from apps.expenses.models import Expense
 from apps.returns.models import Return
@@ -737,6 +737,10 @@ def customer_detail(request, key):
         payments.extend(d.payments.all().order_by('-created_at'))
     payments.sort(key=lambda p: p.created_at, reverse=True)
 
+    # Follow-up notes across those debts
+    follow_ups = DebtFollowUp.objects.filter(
+        debt__in=debts).select_related('user').order_by('-contacted_on', '-created_at')
+
     total_spent = sum((s.total_amount for s in sales), Decimal('0'))
     total_paid_on_debts = sum((p.amount for p in payments), Decimal('0'))
     outstanding = sum((d.balance for d in debts), Decimal('0'))
@@ -820,6 +824,19 @@ def customer_detail(request, key):
                 'debt_id': p.debt_id,
             }
             for p in payments[:100]
+        ],
+        'follow_ups': [
+            {
+                'id': f.id,
+                'contacted_on': f.contacted_on.strftime('%Y-%m-%d'),
+                'method_display': f.get_method_display(),
+                'note': f.note,
+                'promised_date': f.promised_date.strftime('%Y-%m-%d') if f.promised_date else None,
+                'recorded_by': f.user.username if f.user else '',
+                'logged_at': timezone.localtime(f.created_at).strftime('%Y-%m-%d %H:%M'),
+                'debt_id': f.debt_id,
+            }
+            for f in follow_ups
         ],
     })
 
