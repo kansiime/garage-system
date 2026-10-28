@@ -95,6 +95,21 @@ class PurchaseDetailActionTests(APITestCase):
         res = self.client.patch(f'/api/purchases/{p["id"]}/', {'status': 'cancelled'}, format='json')
         self.assertEqual(res.status_code, 400)
 
+    def test_line_total_that_does_not_divide_evenly_is_kept_exact(self):
+        res = self.client.post('/api/purchases/', {
+            'reference': 'PO-SPLIT', 'supplier': self.supplier.id,
+            'status': 'received', 'amount_paid': 158000,
+            'items': [
+                {'product': self.oil.id, 'quantity': 10, 'subtotal': 45000},
+                {'product': self.oil.id, 'quantity': 6, 'subtotal': 113000},
+            ],
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(Decimal(res.data['total_amount']), Decimal('158000'))
+        self.assertEqual(Decimal(res.data['balance']), Decimal('0'))
+        self.assertEqual(Decimal(res.data['items'][1]['unit_cost']), Decimal('18833.33'))
+        self.assertFalse(Debt.objects.exists())
+
 
 class LinkPurchaseDebtsCommandTests(APITestCase):
     def setUp(self):

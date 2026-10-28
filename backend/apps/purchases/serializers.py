@@ -8,7 +8,9 @@ from apps.inventory.models import StockMovement
 
 class PurchaseItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
-    subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    # Send either the line total or the unit cost; the other is worked out
+    unit_cost = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, required=False)
 
     class Meta:
         model = PurchaseItem
@@ -23,6 +25,21 @@ class PurchaseItemSerializer(serializers.ModelSerializer):
         if value < 0:
             raise serializers.ValidationError('Cost cannot be negative.')
         return value
+
+    def validate_subtotal(self, value):
+        if value < 0:
+            raise serializers.ValidationError('Total cannot be negative.')
+        return value
+
+    def validate(self, attrs):
+        qty = Decimal(attrs['quantity'])
+        if 'subtotal' in attrs:
+            attrs['unit_cost'] = (attrs['subtotal'] / qty).quantize(Decimal('0.01'))
+        elif 'unit_cost' in attrs:
+            attrs['subtotal'] = qty * attrs['unit_cost']
+        else:
+            raise serializers.ValidationError('Enter a unit cost or a total for every item.')
+        return attrs
 
 
 def _stock_in(purchase):
@@ -55,7 +72,7 @@ class PurchaseSerializer(serializers.ModelSerializer):
             items = attrs.get('items') or []
             if not items:
                 raise serializers.ValidationError({'items': 'Add at least one item.'})
-            total = sum((Decimal(i['quantity']) * i['unit_cost'] for i in items), Decimal('0'))
+            total = sum((i['subtotal'] for i in items), Decimal('0'))
             paid = attrs.get('amount_paid') or Decimal('0')
             if paid < 0:
                 raise serializers.ValidationError({'amount_paid': 'Amount paid cannot be negative.'})

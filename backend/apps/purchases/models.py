@@ -32,7 +32,6 @@ class PurchaseItem(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.IntegerField()
     unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
-
-    @property
-    def subtotal(self):
-        return self.quantity * self.unit_cost
+    # Stored rather than quantity * unit_cost: supplier invoices give line
+    # totals (6 for 113,000) whose unit cost doesn't fit in 2 decimals
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2)

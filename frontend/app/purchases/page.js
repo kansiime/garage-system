@@ -8,6 +8,9 @@ import { useUser, can } from '@/lib/useUser';
 import { useToast } from '@/components/Toast';
 import { PAYMENT_METHODS, methodLabel } from '@/lib/paymentMethods';
 
+const EMPTY_ITEM = { product: '', quantity: 1, unit_cost: 0, subtotal: 0, from: 'unit' };
+const round2 = (n) => Math.round(n * 100) / 100;
+
 export default function PurchasesPage() {
   const user = useUser();
   const toast = useToast();
@@ -24,7 +27,7 @@ export default function PurchasesPage() {
     payment_method: 'cash',
     notes: '',
   });
-  const [items, setItems] = useState([{ product: '', quantity: 1, unit_cost: 0 }]);
+  const [items, setItems] = useState([{ ...EMPTY_ITEM }]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -55,20 +58,32 @@ export default function PurchasesPage() {
     // eslint-disable-next-line
   }, []);
 
-  const addItem = () => setItems([...items, { product: '', quantity: 1, unit_cost: 0 }]);
+  const addItem = () => setItems([...items, { ...EMPTY_ITEM }]);
   const removeItem = (i) => setItems(items.filter((_, idx) => idx !== i));
 
+  // Suppliers often quote a line total (6 for 113,000) whose unit cost doesn't
+  // divide evenly, so whichever of unit cost / total was typed last is kept
+  // exact and the other is worked out from it.
   const updateItem = (i, field, value) => {
     const copy = [...items];
-    copy[i][field] = value;
+    const it = { ...copy[i], [field]: value };
     if (field === 'product') {
       const p = products.find((x) => x.id === parseInt(value));
-      if (p) copy[i].unit_cost = parseFloat(p.cost_price);
+      if (p) {
+        it.unit_cost = parseFloat(p.cost_price);
+        it.from = 'unit';
+      }
     }
+    if (field === 'unit_cost') it.from = 'unit';
+    if (field === 'subtotal') it.from = 'total';
+    const qty = it.quantity || 0;
+    if (it.from === 'total') it.unit_cost = qty ? round2((it.subtotal || 0) / qty) : 0;
+    else it.subtotal = round2(qty * (it.unit_cost || 0));
+    copy[i] = it;
     setItems(copy);
   };
 
-  const total = items.reduce((s, i) => s + (i.quantity || 0) * (i.unit_cost || 0), 0);
+  const total = items.reduce((s, i) => s + (i.subtotal || 0), 0);
 
   const generateRef = () => {
     const d = new Date();
@@ -84,7 +99,7 @@ export default function PurchasesPage() {
       amount_paid: '',
       notes: '',
     });
-    setItems([{ product: '', quantity: 1, unit_cost: 0 }]);
+    setItems([{ ...EMPTY_ITEM }]);
   };
 
   useEffect(() => { resetForm(); }, []);
@@ -104,7 +119,7 @@ export default function PurchasesPage() {
         items: items.map((i) => ({
           product: parseInt(i.product),
           quantity: parseInt(i.quantity),
-          unit_cost: parseFloat(i.unit_cost),
+          subtotal: round2(i.subtotal || 0),
         })),
       });
       resetForm();
@@ -273,11 +288,10 @@ export default function PurchasesPage() {
   currency={currency}
   onChange={(id, product) => {
     updateItem(i, 'product', id);
-    if (product) updateItem(i, 'unit_cost', parseFloat(product.cost_price));
   }}
 />
                 </div>
-                <div className="col-span-4 md:col-span-2">
+                <div className="col-span-3 md:col-span-2">
                   <label className="md:hidden">Qty</label>
                   <input
                     type="number"
@@ -297,11 +311,16 @@ export default function PurchasesPage() {
                     required
                   />
                 </div>
-                <div className="col-span-3 md:col-span-2 text-right">
-                  <label className="md:hidden">Subtotal</label>
-                  <p className="py-2 text-sm font-semibold">
-                    {money((it.quantity || 0) * (it.unit_cost || 0))}
-                  </p>
+                <div className="col-span-4 md:col-span-2">
+                  <label className="md:hidden">Total</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={it.subtotal}
+                    onChange={(e) => updateItem(i, 'subtotal', parseFloat(e.target.value) || 0)}
+                    required
+                  />
                 </div>
                 <div className="col-span-1 flex justify-end">
                   {items.length > 1 && (
