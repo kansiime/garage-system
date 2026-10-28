@@ -71,6 +71,10 @@ class PurchaseSerializer(serializers.ModelSerializer):
     def validate_purchase_date(self, value):
         if value > timezone.localdate():
             raise serializers.ValidationError('Purchase date cannot be in the future.')
+        from apps.cashup.services import closed_day_error
+        error = closed_day_error(value, self.context['request'].user)
+        if error:
+            raise serializers.ValidationError(error)
         return value
 
     def validate(self, attrs):

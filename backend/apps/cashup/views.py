@@ -9,7 +9,7 @@ from rest_framework.response import Response
 
 from .models import CashUp
 from .serializers import CashUpSerializer
-from .services import day_summary
+from .services import changes_since, day_summary, missed_days
 from apps.accounts.permissions import RoleBasedPermission
 from apps.accounts.audit import log
 
@@ -48,6 +48,25 @@ class CashUpViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         return Response({
             **day_summary(day),
             'suggested_opening': previous.left_in_drawer if previous else 0,
+            'suggested_accounts': _suggested_accounts(previous),
             'previous_date': previous.date if previous else None,
             'cash_up': CashUpSerializer(saved).data if saved else None,
+            'changes': changes_since(saved) if saved else [],
+            'missed': missed_days(),
         })
+
+    @action(detail=False, methods=['get'])
+    def missed(self, request):
+        """Earlier days with money in or out that were never cashed up."""
+        return Response({'days': missed_days()})
+
+
+def _suggested_accounts(previous):
+    """Opening balances for mobile money / bank, from the last day they were checked."""
+    if not previous:
+        return {}
+    suggested = {m: check['counted'] for m, check in previous.accounts.items()}
+    # Cash banked at that closing reaches the bank after it was checked
+    if 'bank' in suggested:
+        suggested['bank'] += float(previous.banked)
+    return suggested

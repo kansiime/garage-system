@@ -10,6 +10,7 @@ Adjustments (returns credited against a debt) and unpaid expenses move no money.
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from django.db.models.functions import TruncDate
 from django.utils import timezone
 
 from apps.accounts.choices import PAYMENT_METHODS
@@ -87,3 +88,71 @@ def day_summary(day):
             for l in lines
         ],
     }
+
+
+def changes_since(cash_up):
+    """
+    Methods whose money in/out for the day no longer matches what the cash-up
+    saved, e.g. a purchase entered for that day after it was counted.
+    """
+    then = {m['method']: m for m in cash_up.summary.get('methods', [])}
+    changes = []
+    for m in day_summary(cash_up.date)['methods']:
+        old = then.get(m['method'], {'in': 0, 'out': 0})
+        if round(float(m['in']) - old['in'], 2) or round(float(m['out']) - old['out'], 2):
+            changes.append({'method': m['method'], 'label': m['label'],
+                            'in_then': old['in'], 'in_now': float(m['in']),
+                            'out_then': old['out'], 'out_now': float(m['out'])})
+    return changes
+
+
+def missed_days(today=None, lookback=30):
+    """
+    Earlier days (within `lookback`) that had money in or out but no cash-up.
+    Nothing is flagged before the first cash-up, so starting to use cash-up
+    doesn't nag about the past.
+    """
+    from .models import CashUp
+
+    today = today or timezone.localdate()
+    first = CashUp.objects.order_by('date').values_list('date', flat=True).first()
+    if first is None:
+        return []
+    start = max(first, today - timedelta(days=lookback))
+    tz = timezone.get_current_timezone()
+    # From the start of `start` up to (not including) today
+    when = {'created_at__gte': _day_range(start)['created_at__gte'],
+            'created_at__lt': _day_range(today)['created_at__gte']}
+
+    def days(qs):
+        return set(qs.annotate(day=TruncDate('created_at', tzinfo=tz))
+                   .values_list('day', flat=True))
+
+    active = (
+        days(Sale.objects.filter(paid_at_sale__gt=0, **when))
+        | days(DebtPayment.objects.filter(**when).exclude(method='adjustment'))
+        | days(Return.objects.filter(resolution='refund', **when))
+        | set(Purchase.objects.filter(paid_at_purchase__gt=0, purchase_date__gte=start,
+                                      purchase_date__lt=today)
+              .values_list('purchase_date', flat=True))
+        | set(Expense.objects.exclude(payment_method='credit')
+              .filter(expense_date__gte=start, expense_date__lt=today)
+              .values_list('expense_date', flat=True))
+    )
+    done = set(CashUp.objects.filter(date__gte=start, date__lt=today)
+               .values_list('date', flat=True))
+    return sorted(active - done)
+
+
+def closed_day_error(day, user):
+    """
+    Non-admins may not enter money into an earlier day that's already been
+    cashed up, since its count is saved. Returns the error message, or None.
+    """
+    from .models import CashUp
+
+    if day >= timezone.localdate() or getattr(user, 'role', None) == 'admin':
+        return None
+    if CashUp.objects.filter(date=day).exists():
+        return f'{day} has already been cashed up. Ask an admin to enter this.'
+    return None

@@ -31,12 +31,19 @@ export default function Dashboard() {
   const user = useUser();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
+  const [missedCashUps, setMissedCashUps] = useState([]);
 
   useEffect(() => {
     api.get('/reports/dashboard/')
       .then((r) => setData(r.data))
       .catch(() => setError('Could not load dashboard data.'));
   }, []);
+
+  const cashesUp = can.cashUp(user);
+  useEffect(() => {
+    if (!cashesUp) return;
+    api.get('/cashup/missed/').then((r) => setMissedCashUps(r.data.days)).catch(() => {});
+  }, [cashesUp]);
 
   const currency = data?.currency || 'UGX';
   const money = (n) => formatMoney(n, currency);
@@ -54,6 +61,18 @@ export default function Dashboard() {
         <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">
           {error}
         </div>
+      )}
+
+      {missedCashUps.length > 0 && (
+        <Link href="/cashup"
+          className="mb-4 flex items-center justify-between gap-3 p-3 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-900 hover:bg-amber-100">
+          <span>
+            <b>{missedCashUps.length === 1 ? '1 day was' : `${missedCashUps.length} days were`} not cashed up:</b>{' '}
+            {missedCashUps.map((d) => new Date(`${d}T00:00:00`)
+              .toLocaleDateString(undefined, { day: 'numeric', month: 'short' })).join(', ')}
+          </span>
+          <span className="font-semibold whitespace-nowrap">Open cash-up →</span>
+        </Link>
       )}
 
       {/* Hero */}

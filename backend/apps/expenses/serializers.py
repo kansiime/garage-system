@@ -19,3 +19,10 @@ class ExpenseSerializer(serializers.ModelSerializer):
         model = Expense
         fields = '__all__'
         read_only_fields = ['user', 'created_at', 'updated_at']
+
+    def validate_expense_date(self, value):
+        from apps.cashup.services import closed_day_error
+        error = closed_day_error(value, self.context['request'].user)
+        if error:
+            raise serializers.ValidationError(error)
+        return value

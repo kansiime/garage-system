@@ -4,8 +4,9 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
+from apps.cashup.models import CashUp
 from apps.expenses.models import Expense
-from apps.inventory.models import Product
+from apps.inventory.models import Product, Supplier
 
 
 class CashUpTests(APITestCase):
@@ -84,3 +85,51 @@ class CashUpTests(APITestCase):
         res = self.client.post('/api/cashup/', {
             'date': timezone.localdate().isoformat(), 'counted_cash': 0}, format='json')
         self.assertEqual(self.client.delete(f'/api/cashup/{res.data["id"]}/').status_code, 403)
+
+    def test_change_after_cash_up_is_reported(self):
+        self.sell(200)
+        today = timezone.localdate().isoformat()
+        self.client.post('/api/cashup/', {'date': today, 'counted_cash': 200}, format='json')
+        self.assertEqual(self.day()['changes'], [])
+        self.sell(200)
+        [change] = self.day()['changes']
+        self.assertEqual((change['method'], change['in_then'], change['in_now']), ('cash', 200, 400))
+
+    def test_missed_days_only_flags_days_with_money_after_first_cash_up(self):
+        today = timezone.localdate()
+        CashUp.objects.create(date=today - timedelta(days=5), counted_cash=0)
+        for ago in (10, 3):   # before the first cash-up / after it
+            Expense.objects.create(description='Fuel', amount=20, payment_method='cash',
+                                   expense_date=today - timedelta(days=ago))
+        self.assertEqual(self.client.get('/api/cashup/missed/').data['days'],
+                         [today - timedelta(days=3)])
+
+    def test_only_admin_can_enter_into_cashed_up_day(self):
+        yesterday = timezone.localdate() - timedelta(days=1)
+        CashUp.objects.create(date=yesterday, counted_cash=0)
+        supplier = Supplier.objects.create(name='Papa')
+        store = User.objects.create_user('store', password='x', role='storekeeper')
+
+        def buy(user, ref):
+            self.client.force_authenticate(user)
+            return self.client.post('/api/purchases/', {
+                'reference': ref, 'supplier': supplier.id, 'purchase_date': yesterday.isoformat(),
+                'items': [{'product': self.oil.id, 'quantity': 1, 'unit_cost': 10}],
+            }, format='json')
+        self.assertEqual(buy(store, 'PO-1').status_code, 400)
+        self.assertEqual(buy(self.admin, 'PO-2').status_code, 201)
+
+    def test_notes_where_cash_went_and_account_checks(self):
+        self.sell(200)
+        self.sell(200, method='mobile')
+        today = timezone.localdate().isoformat()
+        post = lambda **extra: self.client.post('/api/cashup/', {
+            'date': today, 'counted_cash': 200, 'left_in_drawer': 50, **extra}, format='json')
+
+        self.assertIn('denominations', post(denominations={'100': 1}).data)
+        self.assertIn('banked', post(banked=100, to_owner=100).data)
+        res = post(denominations={'100': 2}, banked=100, to_owner=50,
+                   accounts={'mobile': {'opening': 1000, 'counted': 1250}, 'bank': {'counted': ''}})
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['accounts'], {'mobile': {
+            'opening': 1000.0, 'expected': 1200.0, 'counted': 1250.0, 'difference': 50.0}})
