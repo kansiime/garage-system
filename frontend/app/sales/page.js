@@ -5,7 +5,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import ProductPicker from '@/components/ProductPicker';
 import Pagination from '@/components/Pagination';
 import api, { apiError } from '@/lib/api';
-import { formatMoney } from '@/lib/format';
+import { formatMoney, localDate } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 import { useToast } from '@/components/Toast';
 import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
@@ -40,6 +40,8 @@ export default function SalesPage() {
   const [search, setSearch] = useState('');
   const [filterPayment, setFilterPayment] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterStart, setFilterStart] = useState('');
+  const [filterEnd, setFilterEnd] = useState('');
 
   const load = async () => {
     const [s, p, gs] = await Promise.all([
@@ -214,6 +216,9 @@ export default function SalesPage() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return sales.filter((s) => {
+      const day = localDate(s.created_at);
+      if (filterStart && day < filterStart) return false;
+      if (filterEnd && day > filterEnd) return false;
       if (filterPayment !== 'all' && s.payment_type !== filterPayment) return false;
       const debtBal = parseFloat(s.debt_balance || 0);
       const liveStatus =
@@ -230,7 +235,13 @@ export default function SalesPage() {
         (s.customer_phone || '').toLowerCase().includes(q)
       );
     });
-  }, [sales, search, filterPayment, filterStatus]);
+  }, [sales, search, filterPayment, filterStatus, filterStart, filterEnd]);
+  const filteredTotal = filtered.reduce((s, x) => s + parseFloat(x.total_amount || 0), 0);
+  const filtering = search || filterPayment !== 'all' || filterStatus !== 'all' || filterStart || filterEnd;
+  const clearFilters = () => {
+    setSearch(''); setFilterPayment('all'); setFilterStatus('all');
+    setFilterStart(''); setFilterEnd('');
+  };
 
   const pg = usePagination(filtered, 10);
 
@@ -362,8 +373,12 @@ export default function SalesPage() {
 
       {/* Filters */}
       <div className="card mb-4">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="md:col-span-2"><label>Search</label>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+          <div><label>From</label>
+            <input type="date" value={filterStart} onChange={(e) => setFilterStart(e.target.value)} /></div>
+          <div><label>To</label>
+            <input type="date" value={filterEnd} onChange={(e) => setFilterEnd(e.target.value)} /></div>
+          <div className="col-span-2"><label>Search</label>
             <input placeholder="Reference, customer name, or phone…"
               value={search} onChange={(e) => setSearch(e.target.value)} /></div>
           <div><label>Payment</label>
@@ -381,6 +396,14 @@ export default function SalesPage() {
               <option value="unpaid">Unpaid</option>
             </select></div>
         </div>
+        <div className="mt-3 flex justify-between items-center flex-wrap gap-2">
+          <p className="text-sm text-slate-600">
+            {filtered.length} sale{filtered.length !== 1 && 's'} — total <b className="text-slate-900">{money(filteredTotal)}</b>
+          </p>
+          {filtering && (
+            <button onClick={clearFilters} className="btn btn-secondary btn-sm">Reset filters</button>
+          )}
+        </div>
       </div>
 
       <div className="table-scroll">
@@ -397,7 +420,7 @@ export default function SalesPage() {
           <tbody>
             {pg.pageItems.length === 0 && (
               <tr><td colSpan={10} className="text-center text-slate-400 py-8">
-                {search || filterPayment !== 'all' || filterStatus !== 'all'
+                {filtering
                   ? 'No sales match your filters.'
                   : 'No sales recorded yet.'}
               </td></tr>

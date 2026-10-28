@@ -1,20 +1,15 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import api, { apiError } from '@/lib/api';
 import ProductPicker from '@/components/ProductPicker';
-import { formatMoney } from '@/lib/format';
+import { formatMoney, localDate } from '@/lib/format';
 import { useUser, can } from '@/lib/useUser';
 import { useToast } from '@/components/Toast';
 import { PAYMENT_METHODS, methodLabel } from '@/lib/paymentMethods';
 
 const EMPTY_ITEM = { product: '', quantity: 1, unit_cost: 0, subtotal: 0, from: 'unit' };
 const round2 = (n) => Math.round(n * 100) / 100;
-// Local YYYY-MM-DD; toISOString() would give yesterday before 3am in Uganda
-const localToday = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
 
 export default function PurchasesPage() {
   const user = useUser();
@@ -39,6 +34,8 @@ export default function PurchasesPage() {
   const [selected, setSelected] = useState(null);
   const [payment, setPayment] = useState({ amount: '', method: 'cash', notes: '' });
   const [busy, setBusy] = useState(false);
+  const [filterStart, setFilterStart] = useState('');
+  const [filterEnd, setFilterEnd] = useState('');
 
   const load = async () => {
     const [p, pr, s, gs] = await Promise.all([
@@ -105,7 +102,7 @@ export default function PurchasesPage() {
       amount_paid: '',
       payment_method: 'cash',
       notes: '',
-      purchase_date: localToday(),
+      purchase_date: localDate(),
     });
     setItems([{ ...EMPTY_ITEM }]);
   };
@@ -140,6 +137,14 @@ export default function PurchasesPage() {
   };
 
   const money = (n) => formatMoney(n, currency);
+
+  const filtered = useMemo(() => purchases.filter((p) =>
+    (!filterStart || p.purchase_date >= filterStart) &&
+    (!filterEnd || p.purchase_date <= filterEnd)
+  ), [purchases, filterStart, filterEnd]);
+  const filteredTotal = filtered
+    .filter((p) => p.status !== 'cancelled')
+    .reduce((s, p) => s + parseFloat(p.total_amount || 0), 0);
 
   const openPurchase = (p) => {
     setSelected(p);
@@ -229,8 +234,8 @@ export default function PurchasesPage() {
             <input
               type="date"
               value={form.purchase_date}
-              max={localToday()}
-              onChange={(e) => setForm({ ...form, purchase_date: e.target.value || localToday() })}
+              max={localDate()}
+              onChange={(e) => setForm({ ...form, purchase_date: e.target.value || localDate() })}
               required
             />
           </div>
@@ -373,6 +378,25 @@ export default function PurchasesPage() {
         </div>
       </form>
 
+      <div className="card mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div><label>From</label>
+            <input type="date" value={filterStart} onChange={(e) => setFilterStart(e.target.value)} /></div>
+          <div><label>To</label>
+            <input type="date" value={filterEnd} onChange={(e) => setFilterEnd(e.target.value)} /></div>
+        </div>
+        <div className="mt-3 flex justify-between items-center flex-wrap gap-2">
+          <p className="text-sm text-slate-600">
+            {filtered.length} purchase{filtered.length !== 1 && 's'} — total <b className="text-slate-900">{money(filteredTotal)}</b>
+          </p>
+          {(filterStart || filterEnd) && (
+            <button onClick={() => { setFilterStart(''); setFilterEnd(''); }} className="btn btn-secondary btn-sm">
+              Clear dates
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="table-scroll">
         <table>
           <thead>
@@ -387,14 +411,14 @@ export default function PurchasesPage() {
             </tr>
           </thead>
           <tbody>
-            {purchases.length === 0 && (
+            {filtered.length === 0 && (
               <tr>
                 <td colSpan={7} className="text-center text-slate-400 py-8">
-                  No purchases recorded yet.
+                  {filterStart || filterEnd ? 'No purchases in those dates.' : 'No purchases recorded yet.'}
                 </td>
               </tr>
             )}
-            {purchases.map((p) => (
+            {filtered.map((p) => (
               <tr key={p.id} className="cursor-pointer hover:bg-slate-50" onClick={() => openPurchase(p)}>
                 <td className="font-mono text-xs">{p.reference}</td>
                 <td className="whitespace-nowrap">{p.purchase_date}</td>

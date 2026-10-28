@@ -7,3 +7,9 @@ export function formatMoney(amount, currency = 'UGX') {
   });
   return `${currency} ${formatted}`;
 }
+// Local YYYY-MM-DD; toISOString() would give yesterday before 3am in Uganda
+export function localDate(value = new Date()) {
+  const d = new Date(value);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
