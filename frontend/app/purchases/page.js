@@ -10,6 +10,11 @@ import { PAYMENT_METHODS, methodLabel } from '@/lib/paymentMethods';
 
 const EMPTY_ITEM = { product: '', quantity: 1, unit_cost: 0, subtotal: 0, from: 'unit' };
 const round2 = (n) => Math.round(n * 100) / 100;
+// Local YYYY-MM-DD; toISOString() would give yesterday before 3am in Uganda
+const localToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 export default function PurchasesPage() {
   const user = useUser();
@@ -26,6 +31,7 @@ export default function PurchasesPage() {
     amount_paid: '',
     payment_method: 'cash',
     notes: '',
+    purchase_date: '',
   });
   const [items, setItems] = useState([{ ...EMPTY_ITEM }]);
   const [error, setError] = useState('');
@@ -97,7 +103,9 @@ export default function PurchasesPage() {
       supplier: '',
       status: 'pending',
       amount_paid: '',
+      payment_method: 'cash',
       notes: '',
+      purchase_date: localToday(),
     });
     setItems([{ ...EMPTY_ITEM }]);
   };
@@ -213,6 +221,16 @@ export default function PurchasesPage() {
             <input
               value={form.reference}
               onChange={(e) => setForm({ ...form, reference: e.target.value })}
+              required
+            />
+          </div>
+          <div>
+            <label>Date</label>
+            <input
+              type="date"
+              value={form.purchase_date}
+              max={localToday()}
+              onChange={(e) => setForm({ ...form, purchase_date: e.target.value || localToday() })}
               required
             />
           </div>
@@ -379,7 +397,7 @@ export default function PurchasesPage() {
             {purchases.map((p) => (
               <tr key={p.id} className="cursor-pointer hover:bg-slate-50" onClick={() => openPurchase(p)}>
                 <td className="font-mono text-xs">{p.reference}</td>
-                <td className="whitespace-nowrap">{new Date(p.created_at).toLocaleString()}</td>
+                <td className="whitespace-nowrap">{p.purchase_date}</td>
                 <td>{p.supplier_name || '—'}</td>
                 <td>
                   <span className={statusBadge(p.status)}>{p.status}</span>
@@ -407,7 +425,8 @@ export default function PurchasesPage() {
               <div>
                 <h3 className="text-lg font-bold font-mono">{selected.reference}</h3>
                 <p className="text-sm text-slate-500">
-                  {selected.supplier_name || 'No supplier'} · {new Date(selected.created_at).toLocaleString()}
+                  {selected.supplier_name || 'No supplier'} · {selected.purchase_date}
+                  <span className="text-slate-400"> (entered {new Date(selected.created_at).toLocaleString()})</span>
                 </p>
               </div>
               <span className={statusBadge(selected.status)}>{selected.status}</span>

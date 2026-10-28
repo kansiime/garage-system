@@ -83,6 +83,10 @@ def _filter_expenses_by_date(qs, start, end):
     return qs.filter(expense_date__gte=start, expense_date__lte=end)
 
 
+def _filter_purchases_by_date(qs, start, end):
+    return qs.filter(purchase_date__gte=start, purchase_date__lte=end)
+
+
 def _active_purchases():
     # Cancelled purchases were never delivered, so they don't count as spend
     return Purchase.objects.exclude(status='cancelled')
@@ -122,8 +126,8 @@ def dashboard_summary(request):
             'purchase': qs.filter(return_type='purchase').count(),
         }
 
-    purchases_today = _filter_by_local_date(_active_purchases(), today, today)
-    purchases_month = _filter_by_local_date(_active_purchases(), month_start, today)
+    purchases_today = _filter_purchases_by_date(_active_purchases(), today, today)
+    purchases_month = _filter_purchases_by_date(_active_purchases(), month_start, today)
 
     # Last 7 days, including days with no sales, for the dashboard chart
     week_start = today - timedelta(days=6)
@@ -201,7 +205,7 @@ def reports_overview(request):
 
     sales_qs = _filter_by_local_date(Sale.objects.all(), start, end)
     items_qs = SaleItem.objects.filter(sale__in=sales_qs)
-    purchases_qs = _filter_by_local_date(_active_purchases(), start, end)
+    purchases_qs = _filter_purchases_by_date(_active_purchases(), start, end)
     debts_qs = _filter_by_local_date(Debt.objects.all(), start, end)
     expenses_qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
     returns_qs = _filter_by_local_date(Return.objects.all(), start, end)
@@ -447,10 +451,11 @@ def sales_report(request):
 @permission_classes([IsAuthenticated])
 def purchases_report(request):
     start, end = _range_from_params(request)
-    purchases = _filter_by_local_date(Purchase.objects.all(), start, end).order_by('-created_at')
+    purchases = (_filter_purchases_by_date(Purchase.objects.all(), start, end)
+                 .order_by('-purchase_date', '-created_at'))
     headers = ['Reference', 'Date', 'Supplier', 'Status', 'Total', 'Paid', 'Balance']
     rows = [[p.reference,
-             timezone.localtime(p.created_at).strftime('%Y-%m-%d %H:%M'),
+             p.purchase_date.strftime('%Y-%m-%d'),
              p.supplier.name if p.supplier else '-', p.status,
              float(p.total_amount), float(p.amount_paid),
              0.0 if p.status == 'cancelled' else float(p.balance)]

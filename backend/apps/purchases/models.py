@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from apps.accounts.choices import PAYMENT_METHODS
 from apps.inventory.models import Product, Supplier
 
@@ -19,6 +20,8 @@ class Purchase(models.Model):
     paid_at_purchase = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     payment_method = models.CharField(max_length=20, choices=PAYMENT_METHODS, default='cash')
     notes = models.TextField(blank=True)
+    # Day the goods came in; can be earlier than created_at when entered late
+    purchase_date = models.DateField(default=timezone.localdate)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

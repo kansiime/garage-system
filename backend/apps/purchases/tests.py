@@ -1,8 +1,12 @@
+from datetime import timedelta
 from decimal import Decimal
+
+from django.utils import timezone
 
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
+from apps.cashup.services import day_lines
 from apps.debts import services
 from apps.debts.models import Debt
 from apps.inventory.models import Product, Supplier
@@ -109,6 +113,29 @@ class PurchaseDetailActionTests(APITestCase):
         self.assertEqual(Decimal(res.data['balance']), Decimal('0'))
         self.assertEqual(Decimal(res.data['items'][1]['unit_cost']), Decimal('18833.33'))
         self.assertFalse(Debt.objects.exists())
+
+    def test_purchase_date_defaults_to_today_and_can_be_backdated(self):
+        today = timezone.localdate()
+        yesterday = today - timedelta(days=1)
+        self.assertEqual(self.buy()['purchase_date'], today.isoformat())
+
+        res = self.client.post('/api/purchases/', {
+            'reference': 'PO-LATE', 'supplier': self.supplier.id, 'status': 'received',
+            'amount_paid': 500, 'purchase_date': yesterday.isoformat(),
+            'items': [{'product': self.oil.id, 'quantity': 5, 'unit_cost': 100}],
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual([l['reference'] for l in day_lines(yesterday)], ['PO-LATE'])
+        self.assertEqual(day_lines(today), [])
+
+    def test_purchase_date_cannot_be_in_future(self):
+        res = self.client.post('/api/purchases/', {
+            'reference': 'PO-SOON', 'supplier': self.supplier.id,
+            'purchase_date': (timezone.localdate() + timedelta(days=1)).isoformat(),
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_cost': 100}],
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('purchase_date', res.data)
 
 
 class LinkPurchaseDebtsCommandTests(APITestCase):

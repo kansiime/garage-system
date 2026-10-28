@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.db import transaction
+from django.utils import timezone
 from decimal import Decimal
 
 from .models import Purchase, PurchaseItem
@@ -63,9 +64,14 @@ class PurchaseSerializer(serializers.ModelSerializer):
         model = Purchase
         fields = ['id', 'reference', 'supplier', 'supplier_name', 'status',
                   'total_amount', 'amount_paid', 'paid_at_purchase', 'payment_method',
-                  'balance', 'notes',
+                  'balance', 'notes', 'purchase_date',
                   'items', 'created_at']
         read_only_fields = ['user', 'created_at', 'total_amount', 'paid_at_purchase']
+
+    def validate_purchase_date(self, value):
+        if value > timezone.localdate():
+            raise serializers.ValidationError('Purchase date cannot be in the future.')
+        return value
 
     def validate(self, attrs):
         if self.instance is None:
@@ -119,7 +125,7 @@ class PurchaseSerializer(serializers.ModelSerializer):
         Only status and notes can change after creation. Items/amounts are
         locked because stock and the supplier debt were already booked.
         """
-        locked = {'items', 'amount_paid', 'payment_method', 'supplier', 'reference'} & set(validated_data)
+        locked = {'items', 'amount_paid', 'payment_method', 'supplier', 'reference', 'purchase_date'} & set(validated_data)
         changed = [f for f in locked
                    if f == 'items' or validated_data[f] != getattr(instance, f)]
         if changed:

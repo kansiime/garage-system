@@ -51,7 +51,7 @@ def day_lines(day):
         else:
             add('out', 'Supplier payment', p.method, p.amount, p.debt.reference,
                 p.debt.party_name, p.created_at)
-    for p in Purchase.objects.filter(**when).select_related('supplier'):
+    for p in Purchase.objects.filter(purchase_date=day).select_related('supplier'):
         add('out', 'Purchase', p.payment_method, p.paid_at_purchase, p.reference,
             p.supplier.name if p.supplier else '', p.created_at)
     for r in Return.objects.filter(resolution='refund', **when):
