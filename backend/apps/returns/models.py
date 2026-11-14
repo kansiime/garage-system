@@ -52,7 +52,16 @@ class ReturnItem(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.IntegerField()
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    # What one unit cost us, taken from the original sale line (or the
+    # product's cost price) when the return was made. Used for profit.
+    cost_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     @property
     def subtotal(self):
         return self.quantity * self.unit_price
+
+    @property
+    def profit_lost(self):
+        """Profit given back on a sales return: the goods come back to stock,
+        so only the margin is lost, not the whole price."""
+        return self.quantity * (self.unit_price - self.cost_price)

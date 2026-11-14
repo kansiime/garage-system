@@ -183,7 +183,7 @@ export default function Dashboard() {
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">This month</p>
                 <Line label="Gross profit" value={money(data.month.profit)} />
                 <Line label="Expenses" value={`− ${money(data.expenses_month)}`} muted />
-                <Line label="Returns" value={`− ${money(data.returns_month?.total || 0)}`} muted />
+                <Line label="Profit lost on returns" value={`− ${money(data.returns_month?.profit_lost || 0)}`} muted />
                 <Line label="Net profit" value={money(data.net_profit_month)} strong
                   danger={data.net_profit_month < 0} />
               </div>

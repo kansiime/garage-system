@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import timedelta, datetime
 
-from django.db.models import Sum, Count, F
+from django.db.models import Count, DecimalField, F, Sum
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
 from django.utils import timezone
@@ -15,7 +15,7 @@ from apps.purchases.models import Purchase
 from apps.debts.models import Debt
 from apps.inventory.models import Product
 from apps.expenses.models import Expense
-from apps.returns.models import Return
+from apps.returns.models import Return, ReturnItem
 from apps.accounts.models import GarageSettings
 
 from .pdf_generator import generate_report_pdf
@@ -87,6 +87,18 @@ def _filter_purchases_by_date(qs, start, end):
     return qs.filter(purchase_date__gte=start, purchase_date__lte=end)
 
 
+def _returns_profit_lost(returns_qs):
+    """Profit given back on sales returns. Returned goods go back into stock,
+    so only the margin is lost. Purchase returns don't affect profit."""
+    lost = ReturnItem.objects.filter(
+        return_record__in=returns_qs.filter(return_type='sales'),
+    ).aggregate(t=Sum(
+        F('quantity') * (F('unit_price') - F('cost_price')),
+        output_field=DecimalField(max_digits=14, decimal_places=2),
+    ))['t']
+    return lost or Decimal('0')
+
+
 def _active_purchases():
     # Cancelled purchases were never delivered, so they don't count as spend
     return Purchase.objects.exclude(status='cancelled')
@@ -121,6 +133,7 @@ def dashboard_summary(request):
         total = qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
         return {
             'total': float(total),
+            'profit_lost': float(_returns_profit_lost(qs)),
             'count': qs.count(),
             'sales': qs.filter(return_type='sales').count(),
             'purchase': qs.filter(return_type='purchase').count(),
@@ -168,8 +181,8 @@ def dashboard_summary(request):
         'expenses_today_count': today_expenses['count'],
         'expenses_month': month_expenses['total'],
         'expenses_month_count': month_expenses['count'],
-        'net_profit_today': today_sales['profit'] - today_expenses['total'] - today_returns['total'],
-        'net_profit_month': month_sales['profit'] - month_expenses['total'] - month_returns['total'],
+        'net_profit_today': today_sales['profit'] - today_expenses['total'] - today_returns['profit_lost'],
+        'net_profit_month': month_sales['profit'] - month_expenses['total'] - month_returns['profit_lost'],
         'returns_today': today_returns,
         'returns_month': month_returns,
         'purchases_today': float(
@@ -219,7 +232,8 @@ def reports_overview(request):
 
     total_expenses_dec = expenses_qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
     total_returns_dec = returns_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
-    net_profit_dec = gross_profit_dec - total_expenses_dec - total_returns_dec
+    returns_profit_lost_dec = _returns_profit_lost(returns_qs)
+    net_profit_dec = gross_profit_dec - total_expenses_dec - returns_profit_lost_dec
 
     total_sales_f = float(total_sales)
     total_purchases_f = float(total_purchases)
@@ -383,6 +397,7 @@ def reports_overview(request):
             'gross_profit': gross_profit_f,
             'total_expenses': total_expenses_f,
             'total_returns': total_returns_f,
+            'returns_profit_lost': float(returns_profit_lost_dec),
             'net_profit': net_profit_f,
             'gross_margin': gross_margin,
             'net_margin': net_margin,
@@ -512,7 +527,8 @@ def profit_report(request):
     gross_dec = revenue_dec - cost_dec
     expenses_dec = expenses.aggregate(t=Sum('amount'))['t'] or Decimal('0')
     returns_dec = returns.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
-    net_dec = gross_dec - expenses_dec - returns_dec
+    returns_lost_dec = _returns_profit_lost(returns)
+    net_dec = gross_dec - expenses_dec - returns_lost_dec
 
     headers = ['Product', 'Qty Sold', 'Revenue', 'Cost', 'Gross Profit']
     rows = []
@@ -534,6 +550,7 @@ def profit_report(request):
                'Gross Profit': float(gross_dec),
                'Total Expenses': float(expenses_dec),
                'Total Returns': float(returns_dec),
+               'Profit Lost on Returns': float(returns_lost_dec),
                'Net Profit': float(net_dec)}
     return _respond(request, f"Profit Report ({start} to {end})", headers, rows, summary)
 

@@ -10,13 +10,25 @@ from apps.purchases.models import Purchase, PurchaseItem
 from apps.accounts.audit import log
 
 
+def unit_cost(r, product):
+    """Cost of one returned unit: what it cost on the original sale, else the
+    product's current cost price."""
+    if r.return_type == 'sales' and r.original_sale_id:
+        lines = SaleItem.objects.filter(sale_id=r.original_sale_id, product=product)
+        qty = sum(l.quantity for l in lines)
+        if qty:
+            return (sum(l.quantity * l.cost_price for l in lines) / qty).quantize(Decimal('0.01'))
+    return product.cost_price
+
+
 class ReturnItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
     subtotal = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
 
     class Meta:
         model = ReturnItem
-        fields = ['id', 'product', 'product_name', 'quantity', 'unit_price', 'subtotal']
+        fields = ['id', 'product', 'product_name', 'quantity', 'unit_price', 'cost_price', 'subtotal']
+        read_only_fields = ['cost_price']
 
 
 class ReturnSerializer(serializers.ModelSerializer):
@@ -112,8 +124,9 @@ class ReturnSerializer(serializers.ModelSerializer):
             )
 
             for item in items_data:
-                ReturnItem.objects.create(return_record=r, **item)
                 product = item['product']
+                ReturnItem.objects.create(
+                    return_record=r, cost_price=unit_cost(r, product), **item)
 
                 if r.return_type == 'sales':
                     # Customer returned goods → stock goes UP

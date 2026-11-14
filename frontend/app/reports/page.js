@@ -104,7 +104,8 @@ export default function ReportsPage() {
             <Kpi label="Gross Profit" value={money(data.kpis.gross_profit || data.kpis.total_profit)}
                  accent="green" hint={`${data.kpis.gross_margin}% margin`} />
             <Kpi label="Total Expenses" value={money(data.kpis.total_expenses || 0)} accent="red" />
-            <Kpi label="Total Returns" value={money(data.kpis.total_returns || 0)} accent="amber" />
+            <Kpi label="Profit Lost on Returns" value={money(data.kpis.returns_profit_lost || 0)} accent="amber"
+                 hint={`${money(data.kpis.total_returns || 0)} returned`} />
             <Kpi label="Net Profit" value={money(data.kpis.net_profit || 0)}
                  accent={(data.kpis.net_profit || 0) >= 0 ? 'green' : 'red'}
                  hint={`${data.kpis.net_margin || 0}% net margin`} />
