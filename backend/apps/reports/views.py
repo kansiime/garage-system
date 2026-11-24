@@ -127,6 +127,7 @@ def _collection_split(sales_qs):
         owed = max(sale.total_amount - sale.amount_paid, Decimal('0'))
         if sale.total_amount > 0 and owed > 0:
             profit_owed += sale_profit * owed / sale.total_amount
+    profit_owed = profit_owed.quantize(Decimal('0.01'))
     return {
         'sales': float(sales_total),
         'collected': float(paid),
@@ -135,6 +136,29 @@ def _collection_split(sales_qs):
         'profit_collected': float(profit - profit_owed),
         'profit_in_debts': float(profit_owed),
     }
+
+
+def _daily_money_in(start, end):
+    """Sales and debt payments received for every day in the range
+    (days with nothing are included, so gaps show)."""
+    tz = timezone.get_current_timezone()
+    daily = {start + timedelta(days=n): {'sales': Decimal('0'), 'debt_payments': Decimal('0'),
+                                         'debt_payments_count': 0}
+             for n in range((end - start).days + 1)}
+    sales = _filter_by_local_date(Sale.objects.all(), start, end)
+    for sale in sales.only('created_at', 'total_amount'):
+        daily[timezone.localtime(sale.created_at, tz).date()]['sales'] += sale.total_amount
+    for pay in _debt_payments_received(start, end).only('created_at', 'amount'):
+        day = daily[timezone.localtime(pay.created_at, tz).date()]
+        day['debt_payments'] += pay.amount
+        day['debt_payments_count'] += 1
+    return [
+        {'date': d.strftime('%Y-%m-%d'), 'sales': float(v['sales']),
+         'debt_payments': float(v['debt_payments']),
+         'debt_payments_count': v['debt_payments_count'],
+         'total': float(v['sales'] + v['debt_payments'])}
+        for d, v in daily.items()
+    ]
 
 
 def _active_purchases():
@@ -279,24 +303,7 @@ def reports_overview(request):
     total_sales = sales_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
     debt_payments_qs = _debt_payments_received(start, end)
     debt_payments_total = debt_payments_qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
-    # Sales and debt payments for every day in the range (zero days included)
-    tz = timezone.get_current_timezone()
-    daily = {start + timedelta(days=n): {'sales': Decimal('0'), 'debt_payments': Decimal('0'),
-                                         'debt_payments_count': 0}
-             for n in range((end - start).days + 1)}
-    for s in sales_qs.only('created_at', 'total_amount'):
-        daily[timezone.localtime(s.created_at, tz).date()]['sales'] += s.total_amount
-    for p in debt_payments_qs.only('created_at', 'amount'):
-        day = daily[timezone.localtime(p.created_at, tz).date()]
-        day['debt_payments'] += p.amount
-        day['debt_payments_count'] += 1
-    daily_money_in = [
-        {'date': d.strftime('%Y-%m-%d'), 'sales': float(v['sales']),
-         'debt_payments': float(v['debt_payments']),
-         'debt_payments_count': v['debt_payments_count'],
-         'total': float(v['sales'] + v['debt_payments'])}
-        for d, v in daily.items()
-    ]
+    daily_money_in = _daily_money_in(start, end)
 
     total_purchases = purchases_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
 
@@ -543,7 +550,12 @@ def sales_report(request):
              float(s.total_amount), float(s.amount_paid), float(s.balance)]
             for s in sales]
     total = float(sales.aggregate(t=Sum('total_amount'))['t'] or Decimal('0'))
-    summary = {**_shop_meta(), 'Total Sales': total, 'Transactions': sales.count()}
+    collection = _collection_split(sales)
+    debt_paid = _debt_payments_received(start, end).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    summary = {**_shop_meta(), 'Total Sales': total, 'Transactions': sales.count(),
+               'Sales Paid': collection['collected'],
+               'Sales Still Owed': collection['still_owed'],
+               'Debt Payments Received': float(debt_paid)}
     return _respond(request, f"Sales Report ({start} to {end})", headers, rows, summary)
 
 
@@ -637,7 +649,36 @@ def profit_report(request):
                'Total Returns': float(returns_dec),
                'Profit Lost on Returns': float(returns_lost_dec),
                'Net Profit': float(net_dec)}
+    collection = _collection_split(sales)
+    summary.update({
+        'Profit Received': collection['profit_collected'],
+        'Profit Still in Debts': collection['profit_in_debts'],
+        'Net Profit Received': collection['profit_collected']
+            - float(expenses_dec) - float(returns_lost_dec),
+    })
     return _respond(request, f"Profit Report ({start} to {end})", headers, rows, summary)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def money_in_report(request):
+    start, end = _range_from_params(request)
+    days = _daily_money_in(start, end)
+    headers = ['Date', 'Sales', 'Debts Paid', 'Payments', 'Debts Paid vs Sales', 'Total Money In']
+    pct = lambda debts, sales: f"{round(debts / sales * 100)}%" if sales else '-'
+    rows = [[d['date'], d['sales'], d['debt_payments'], d['debt_payments_count'],
+             pct(d['debt_payments'], d['sales']), d['total']]
+            for d in reversed(days)]
+    sales = sum(d['sales'] for d in days)
+    debts = sum(d['debt_payments'] for d in days)
+    summary = {**_shop_meta(),
+               'Total Sales': sales,
+               'Total Debts Paid': debts,
+               'Debt Payments': sum(d['debt_payments_count'] for d in days),
+               'Debts Paid vs Sales': pct(debts, sales),
+               'Total Money In': sales + debts}
+    return _respond(request, f"Sales vs Debts Paid by Day ({start} to {end})",
+                    headers, rows, summary)
 
 
 @api_view(['GET'])

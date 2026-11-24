@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
@@ -116,6 +117,32 @@ class DashboardTests(APITestCase):
         kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
         self.assertEqual(kpis['profit_in_debts'], 50)
         self.assertEqual(kpis['net_profit_received'], 240)
+
+    def test_downloads_include_debts_paid_and_profit_received(self):
+        credit = self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'customer_name': 'Ann', 'amount_paid': 0,
+            'items': [{'product': self.oil.id, 'quantity': 3, 'unit_price': 100}],
+        }, format='json').data
+        self.client.post(f'/api/debts/{credit["debt_id"]}/record_payment/',
+                         {'amount': 100}, format='json')
+
+        money_in = self.client.get('/api/reports/money-in/?period=week&output=json').data
+        self.assertEqual(len(money_in['rows']), 7)
+        self.assertEqual(money_in['rows'][0], [str(timezone.localdate()), 300, 100, 1, '33%', 400])
+        self.assertEqual(money_in['summary']['Total Money In'], 400)
+
+        profit = self.client.get('/api/reports/profit/?period=today&output=json').data['summary']
+        self.assertEqual(profit['Profit Received'], 40)       # 1/3 of 120 profit
+        self.assertEqual(profit['Profit Still in Debts'], 80)
+        sales = self.client.get('/api/reports/sales/?period=today&output=json').data['summary']
+        self.assertEqual(sales['Sales Still Owed'], 200)
+        self.assertEqual(sales['Debt Payments Received'], 100)
+
+        for key in ('money-in', 'profit', 'sales'):
+            for fmt in ('pdf', 'excel'):
+                res = self.client.get(f'/api/reports/{key}/?period=month&output={fmt}')
+                self.assertEqual(res.status_code, 200, (key, fmt))
+                self.assertGreater(len(res.content), 500)
 
 
 class ReturnsProfitTests(APITestCase):

@@ -372,6 +372,7 @@ export default function ReportsPage() {
             { key: 'stock', label: 'Stock Report' },
             { key: 'debts', label: 'Debts Report' },
             { key: 'profit', label: 'Profit Report' },
+            { key: 'money-in', label: 'Sales vs Debts Paid by Day' },
             { key: 'expenses', label: 'Expenses Report' },
             { key: 'returns', label: 'Returns Report' },
           ].map((r) => (

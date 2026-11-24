@@ -10,6 +10,7 @@ urlpatterns = [
     path('stock/', views.stock_report),
     path('debts/', views.debts_report),
     path('profit/', views.profit_report),
+    path('money-in/', views.money_in_report),
     path('expenses/', views.expenses_report),
     path('returns/', views.returns_report),
     path('product-movement/', views.product_movement),
