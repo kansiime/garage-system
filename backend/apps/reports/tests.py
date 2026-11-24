@@ -93,8 +93,9 @@ class DashboardTests(APITestCase):
                          [str(start + timedelta(days=n)) for n in range(4)])
         self.assertEqual(daily[1]['debt_payments'], 200)
         self.assertEqual(daily[1]['sales'], 0)
-        self.assertEqual(daily[3], {'date': str(today), 'sales': 100, 'debt_payments': 75,
-                                    'debt_payments_count': 1, 'total': 175})
+        self.assertEqual(daily[3], {'date': str(today), 'sales': 100, 'paid_at_sale': 100,
+                                    'debt_payments': 75, 'debt_payments_count': 1,
+                                    'expenses': 0, 'net_cash': 175})
 
     def test_profit_is_split_into_collected_and_still_in_debts(self):
         # Two sales, each 100 profit: one paid in full, one on credit,
@@ -131,8 +132,8 @@ class DashboardTests(APITestCase):
 
         money_in = self.client.get('/api/reports/money-in/?period=week&output=json').data
         self.assertEqual(len(money_in['rows']), 7)
-        self.assertEqual(money_in['rows'][0], [str(timezone.localdate()), 300, 100, 1, '33%', 400])
-        self.assertEqual(money_in['summary']['Total Money In'], 400)
+        self.assertEqual(money_in['rows'][0], [str(timezone.localdate()), 300, 0, 100, 0, 100])
+        self.assertEqual(money_in['summary']['Debts Paid'], 100)
 
         profit = self.client.get('/api/reports/profit/?period=today&output=json').data['summary']
         self.assertEqual(profit['Profit Received'], 40)       # 1/3 of 120 profit
@@ -216,6 +217,31 @@ class DashboardTests(APITestCase):
         for n in range(1, 9):
             sell(n)
         self.assertEqual(counts(), few)
+
+    def test_net_cash_is_paid_at_sale_plus_debts_paid_minus_expenses_paid(self):
+        from datetime import timedelta
+        from apps.expenses.models import Expense
+        today = timezone.localdate()
+        # 250 paid at the counter on a 400 sale; 150 goes on Ann's debt
+        sale = self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'customer_name': 'Ann', 'amount_paid': 250,
+            'items': [{'product': self.oil.id, 'quantity': 4, 'unit_price': 100}],
+        }, format='json').data
+        self.client.post(f'/api/debts/{sale["debt_id"]}/record_payment/', {'amount': 100}, format='json')
+        Expense.objects.create(description='Fuel', amount=70, expense_date=today, payment_method='cash')
+        Expense.objects.create(description='Parts on account', amount=500, expense_date=today,
+                               payment_method='credit')  # not paid yet: no money out
+        Expense.objects.create(description='Rent', amount=999, expense_date=today - timedelta(days=40))
+
+        cash = self.client.get('/api/reports/dashboard/').data['selected']['cash']
+        self.assertEqual(cash, {'paid_at_sale': 250, 'debts_paid': 100, 'money_in': 350,
+                                'expenses_paid': 70, 'net_cash': 280})
+        self.assertEqual(self.client.get('/api/reports/overview/?period=today')
+                         .data['kpis']['cash']['net_cash'], 280)
+        day = self.client.get('/api/reports/overview/?period=today').data['daily_money_in'][-1]
+        self.assertEqual((day['paid_at_sale'], day['expenses'], day['net_cash']), (250, 70, 280))
+        row = self.client.get('/api/reports/money-in/?period=today&output=json').data['rows'][0]
+        self.assertEqual(row, [str(today), 400, 250, 100, 70, 280])
 
 
 class ReturnsProfitTests(APITestCase):

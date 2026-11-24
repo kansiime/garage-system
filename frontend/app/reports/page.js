@@ -4,6 +4,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import api, { downloadFile } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import PeriodPicker, { DEFAULT_PERIOD, periodQuery, periodRange } from '@/components/PeriodPicker';
+import CashFlow from '@/components/CashFlow';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -80,6 +81,9 @@ export default function ReportsPage() {
 
       {data && (
         <>
+          <CashFlow cash={data.kpis.cash} money={money}
+            label={range?.label || `${data.period.start} to ${data.period.end}`} />
+
           {/* KPIs, grouped into three compact panels */}
           {(() => {
             const k = data.kpis;
@@ -360,7 +364,7 @@ export default function ReportsPage() {
             { key: 'stock', label: 'Stock Report' },
             { key: 'debts', label: 'Debts Report' },
             { key: 'profit', label: 'Profit Report' },
-            { key: 'money-in', label: 'Sales vs Debts Paid by Day' },
+            { key: 'money-in', label: 'Daily Cash (sales, debts paid, expenses)' },
             { key: 'expenses', label: 'Expenses Report' },
             { key: 'returns', label: 'Returns Report' },
           ].map((r) => (
@@ -381,23 +385,26 @@ export default function ReportsPage() {
 function DailyMoneyIn({ days, money }) {
   const totals = days.reduce((t, d) => ({
     sales: t.sales + d.sales,
+    paid: t.paid + d.paid_at_sale,
     debts: t.debts + d.debt_payments,
     count: t.count + d.debt_payments_count,
-  }), { sales: 0, debts: 0, count: 0 });
+    expenses: t.expenses + d.expenses,
+    net: t.net + d.net_cash,
+  }), { sales: 0, paid: 0, debts: 0, count: 0, expenses: 0, net: 0 });
   const label = (iso) => new Date(`${iso}T00:00:00`)
     .toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
   const chartData = days.map((d) => ({ ...d, label: label(d.date) }));
-  const pct = (d) => (d.sales ? `${Math.round((d.debt_payments / d.sales) * 100)}%` : '—');
 
   return (
     <div className="card mb-6">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
-          <p className="card-title mb-1">Sales vs debts paid by day</p>
+          <p className="card-title mb-1">Sales, debts paid &amp; cash by day</p>
           <p className="text-sm text-slate-500">
             <b className="text-slate-900">{money(totals.sales)}</b> sales ·{' '}
             <b className="text-slate-900">{money(totals.debts)}</b> debts paid
-            {' '}({totals.count} payment{totals.count !== 1 && 's'})
+            {' '}({totals.count} payment{totals.count !== 1 && 's'}) ·{' '}
+            <b className="text-slate-900">{money(totals.net)}</b> net cash
           </p>
         </div>
         <div className="flex items-center gap-4 text-xs text-slate-600">
@@ -434,21 +441,22 @@ function DailyMoneyIn({ days, money }) {
             <tr>
               <th>Date</th>
               <th className="text-right">Sales</th>
+              <th className="text-right">Paid at sale</th>
               <th className="text-right">Debts paid</th>
-              <th className="text-right">Payments</th>
-              <th className="text-right">Debts paid vs sales</th>
-              <th className="text-right">Total money in</th>
+              <th className="text-right">Expenses</th>
+              <th className="text-right">Net cash</th>
             </tr>
           </thead>
           <tbody>
             {[...days].reverse().map((d) => (
-              <tr key={d.date} className={!d.sales && !d.debt_payments ? 'text-slate-400' : ''}>
+              <tr key={d.date} className={!d.sales && !d.debt_payments && !d.expenses ? 'text-slate-400' : ''}>
                 <td className="whitespace-nowrap">{label(d.date)}</td>
                 <td className="text-right tabular-nums">{money(d.sales)}</td>
+                <td className="text-right tabular-nums">{money(d.paid_at_sale)}</td>
                 <td className="text-right tabular-nums">{money(d.debt_payments)}</td>
-                <td className="text-right tabular-nums">{d.debt_payments_count}</td>
-                <td className="text-right tabular-nums">{pct(d)}</td>
-                <td className="text-right tabular-nums font-semibold">{money(d.total)}</td>
+                <td className="text-right tabular-nums">{d.expenses ? `− ${money(d.expenses)}` : money(0)}</td>
+                <td className={`text-right tabular-nums font-semibold ${d.net_cash < 0 ? 'text-red-600' : ''}`}>
+                  {money(d.net_cash)}</td>
               </tr>
             ))}
           </tbody>
@@ -456,10 +464,10 @@ function DailyMoneyIn({ days, money }) {
             <tr className="font-bold border-t border-slate-200">
               <td>Total</td>
               <td className="text-right tabular-nums">{money(totals.sales)}</td>
+              <td className="text-right tabular-nums">{money(totals.paid)}</td>
               <td className="text-right tabular-nums">{money(totals.debts)}</td>
-              <td className="text-right tabular-nums">{totals.count}</td>
-              <td className="text-right tabular-nums">{pct({ sales: totals.sales, debt_payments: totals.debts })}</td>
-              <td className="text-right tabular-nums">{money(totals.sales + totals.debts)}</td>
+              <td className="text-right tabular-nums">{totals.expenses ? `− ${money(totals.expenses)}` : money(0)}</td>
+              <td className={`text-right tabular-nums ${totals.net < 0 ? 'text-red-600' : ''}`}>{money(totals.net)}</td>
             </tr>
           </tfoot>
         </table>

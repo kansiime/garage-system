@@ -6,6 +6,7 @@ import api from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { useUser, can } from '@/lib/useUser';
 import PeriodPicker, { DEFAULT_PERIOD, periodQuery, periodRange } from '@/components/PeriodPicker';
+import CashFlow from '@/components/CashFlow';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
@@ -178,6 +179,8 @@ export default function Dashboard() {
             <Kpi icon="📦" tint="bg-blue-50" label="Stock value" value={money(data.stock_value)}
               hint={`${money(sel.purchases)} bought ${label}`} />
           </div>
+
+          <CashFlow cash={sel.cash} money={money} label={label} />
 
           {/* Money in, and how much of the profit is actually in hand */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
