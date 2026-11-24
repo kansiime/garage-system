@@ -12,7 +12,7 @@ from rest_framework.response import Response
 
 from apps.sales.models import Sale, SaleItem
 from apps.purchases.models import Purchase
-from apps.debts.models import Debt
+from apps.debts.models import Debt, DebtPayment
 from apps.inventory.models import Product
 from apps.expenses.models import Expense
 from apps.returns.models import Return, ReturnItem
@@ -99,6 +99,15 @@ def _returns_profit_lost(returns_qs):
     return lost or Decimal('0')
 
 
+def _debt_payments_received(start, end):
+    """Money customers paid off their debts in the range. Adjustments
+    (e.g. goods returned) move no money, so they are left out."""
+    return _filter_by_local_date(
+        DebtPayment.objects.filter(debt__debt_type='receivable').exclude(method='adjustment'),
+        start, end,
+    )
+
+
 def _active_purchases():
     # Cancelled purchases were never delivered, so they don't count as spend
     return Purchase.objects.exclude(status='cancelled')
@@ -139,12 +148,18 @@ def dashboard_summary(request):
             'purchase': qs.filter(return_type='purchase').count(),
         }
 
+    def aggregate_debt_payments(start, end):
+        qs = _debt_payments_received(start, end)
+        total = qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+        return {'total': float(total), 'count': qs.count()}
+
     purchases_today = _filter_purchases_by_date(_active_purchases(), today, today)
     purchases_month = _filter_purchases_by_date(_active_purchases(), month_start, today)
 
     # Last 7 days, including days with no sales, for the dashboard chart
     week_start = today - timedelta(days=6)
-    days = {week_start + timedelta(days=n): {'total': Decimal('0'), 'profit': Decimal('0')}
+    days = {week_start + timedelta(days=n): {'total': Decimal('0'), 'profit': Decimal('0'),
+                                             'debt_payments': Decimal('0')}
             for n in range(7)}
     tz = timezone.get_current_timezone()
     week_items = SaleItem.objects.filter(
@@ -154,8 +169,11 @@ def dashboard_summary(request):
         day = days[timezone.localtime(i.sale.created_at, tz).date()]
         day['total'] += i.quantity * i.unit_price
         day['profit'] += i.quantity * (i.unit_price - i.cost_price)
+    for p in _debt_payments_received(week_start, today):
+        days[timezone.localtime(p.created_at, tz).date()]['debt_payments'] += p.amount
     trend = [{'date': d.strftime('%Y-%m-%d'), 'total': float(v['total']),
-              'profit': float(v['profit'])} for d, v in days.items()]
+              'profit': float(v['profit']), 'debt_payments': float(v['debt_payments'])}
+             for d, v in days.items()]
 
     receivables = Debt.objects.filter(debt_type='receivable').exclude(status='paid')
     payables = Debt.objects.filter(debt_type='payable').exclude(status='paid')
@@ -183,6 +201,8 @@ def dashboard_summary(request):
         'expenses_month_count': month_expenses['count'],
         'net_profit_today': today_sales['profit'] - today_expenses['total'] - today_returns['profit_lost'],
         'net_profit_month': month_sales['profit'] - month_expenses['total'] - month_returns['profit_lost'],
+        'debt_payments_today': aggregate_debt_payments(today, today),
+        'debt_payments_month': aggregate_debt_payments(month_start, today),
         'returns_today': today_returns,
         'returns_month': month_returns,
         'purchases_today': float(
@@ -224,6 +244,8 @@ def reports_overview(request):
     returns_qs = _filter_by_local_date(Return.objects.all(), start, end)
 
     total_sales = sales_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
+    debt_payments_qs = _debt_payments_received(start, end)
+    debt_payments_total = debt_payments_qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
     total_purchases = purchases_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
 
     revenue_dec = sum((i.quantity * i.unit_price for i in items_qs), Decimal('0'))
@@ -392,6 +414,8 @@ def reports_overview(request):
         'period': {'start': str(start), 'end': str(end)},
         'kpis': {
             'total_sales': total_sales_f,
+            'debt_payments_received': float(debt_payments_total),
+            'debt_payments_count': debt_payments_qs.count(),
             'total_purchases': total_purchases_f,
             'total_profit': gross_profit_f,
             'gross_profit': gross_profit_f,

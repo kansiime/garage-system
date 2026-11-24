@@ -44,6 +44,30 @@ class DashboardTests(APITestCase):
         self.assertEqual(trend[-1]['profit'], 80)
         self.assertEqual(sum(d['total'] for d in trend[:-1]), 0)
 
+    def test_debt_payments_received_are_shown_next_to_sales(self):
+        res = self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'customer_name': 'Ann', 'amount_paid': 0,
+            'items': [{'product': self.oil.id, 'quantity': 3, 'unit_price': 100}],
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        debt_id = res.data['debt_id']
+        self.client.post(f'/api/debts/{debt_id}/record_payment/', {'amount': 120}, format='json')
+        # An adjustment moves no money and supplier payments aren't money in
+        from apps.debts.models import Debt, DebtPayment
+        DebtPayment.objects.create(debt_id=debt_id, amount=50, method='adjustment')
+        self.buy('PO-1', 400)
+        payable = Debt.objects.get(debt_type='payable')
+        self.client.post(f'/api/debts/{payable.id}/record_payment/', {'amount': 100}, format='json')
+
+        data = self.client.get('/api/reports/dashboard/').data
+        self.assertEqual(data['today']['total'], 300)
+        self.assertEqual(data['debt_payments_today'], {'total': 120, 'count': 1})
+        self.assertEqual(data['debt_payments_month']['total'], 120)
+        self.assertEqual(data['trend'][-1]['debt_payments'], 120)
+        kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
+        self.assertEqual(kpis['debt_payments_received'], 120)
+        self.assertEqual(kpis['debt_payments_count'], 1)
+
 
 class ReturnsProfitTests(APITestCase):
     """A sales return only loses the margin (goods go back to stock);

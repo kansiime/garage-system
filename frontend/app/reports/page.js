@@ -101,6 +101,10 @@ export default function ReportsPage() {
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <Kpi label="Total Sales" value={money(data.kpis.total_sales)} />
+            <Kpi label="Debt Payments Received" value={money(data.kpis.debt_payments_received || 0)} accent="amber"
+                 hint={data.kpis.total_sales
+                   ? `${Math.round(((data.kpis.debt_payments_received || 0) / data.kpis.total_sales) * 100)}% of sales · ${data.kpis.debt_payments_count || 0} payments`
+                   : `${data.kpis.debt_payments_count || 0} payments`} />
             <Kpi label="Gross Profit" value={money(data.kpis.gross_profit || data.kpis.total_profit)}
                  accent="green" hint={`${data.kpis.gross_margin}% margin`} />
             <Kpi label="Total Expenses" value={money(data.kpis.total_expenses || 0)} accent="red" />
