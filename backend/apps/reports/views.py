@@ -145,21 +145,28 @@ def _daily_money_in(start, end):
     """Sales and debt payments received for every day in the range
     (days with nothing are included, so gaps show)."""
     tz = timezone.get_current_timezone()
-    daily = {start + timedelta(days=n): {'sales': Decimal('0'), 'debt_payments': Decimal('0'),
-                                         'debt_payments_count': 0}
+    daily = {start + timedelta(days=n): {'sales': Decimal('0'), 'paid_at_sale': Decimal('0'),
+                                         'debt_payments': Decimal('0'), 'debt_payments_count': 0,
+                                         'expenses': Decimal('0')}
              for n in range((end - start).days + 1)}
     sales = _filter_by_local_date(Sale.objects.all(), start, end)
-    for sale in sales.only('created_at', 'total_amount'):
-        daily[timezone.localtime(sale.created_at, tz).date()]['sales'] += sale.total_amount
+    for sale in sales.only('created_at', 'total_amount', 'paid_at_sale'):
+        day = daily[timezone.localtime(sale.created_at, tz).date()]
+        day['sales'] += sale.total_amount
+        day['paid_at_sale'] += sale.paid_at_sale
+    for row in _expenses_paid(start, end).values('expense_date').annotate(t=Sum('amount')):
+        daily[row['expense_date']]['expenses'] += row['t']
     for pay in _debt_payments_received(start, end).only('created_at', 'amount'):
         day = daily[timezone.localtime(pay.created_at, tz).date()]
         day['debt_payments'] += pay.amount
         day['debt_payments_count'] += 1
     return [
         {'date': d.strftime('%Y-%m-%d'), 'sales': float(v['sales']),
+         'paid_at_sale': float(v['paid_at_sale']),
          'debt_payments': float(v['debt_payments']),
          'debt_payments_count': v['debt_payments_count'],
-         'total': float(v['sales'] + v['debt_payments'])}
+         'expenses': float(v['expenses']),
+         'net_cash': float(v['paid_at_sale'] + v['debt_payments'] - v['expenses'])}
         for d, v in daily.items()
     ]
 
@@ -189,6 +196,27 @@ def _period_trend(start, end):
         'points': [{'date': k.strftime('%Y-%m-%d'), 'total': float(v['total']),
                     'profit': float(v['profit']), 'debt_payments': float(v['debt_payments'])}
                    for k, v in buckets.items()],
+    }
+
+
+def _expenses_paid(start, end):
+    """Expenses that actually took money out (bought on credit = not yet)."""
+    return _filter_expenses_by_date(Expense.objects.all(), start, end).exclude(payment_method='credit')
+
+
+def _cash_flow(start, end):
+    """Money actually received (paid at the counter + debts paid) minus
+    expenses paid, for the range. Matches how Cash-up counts these lines."""
+    sales_paid = _filter_by_local_date(Sale.objects.all(), start, end) \
+        .aggregate(t=Sum('paid_at_sale'))['t'] or Decimal('0')
+    debts_paid = _debt_payments_received(start, end).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    expenses = _expenses_paid(start, end).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    return {
+        'paid_at_sale': float(sales_paid),
+        'debts_paid': float(debts_paid),
+        'money_in': float(sales_paid + debts_paid),
+        'expenses_paid': float(expenses),
+        'net_cash': float(sales_paid + debts_paid - expenses),
     }
 
 
@@ -230,6 +258,7 @@ def dashboard_summary(request):
         'net_profit': float(profit - expenses - returns_lost),
         'purchases': float(purchases),
         'collection': _collection_split(sales),
+        'cash': _cash_flow(start, end),
         'trend': _period_trend(start, end),
     }
 
@@ -452,6 +481,7 @@ def reports_overview(request):
         'kpis': {
             'total_sales': total_sales_f,
             'debt_payments_received': float(debt_payments_total),
+            'cash': _cash_flow(start, end),
             'sales_collected': collection['collected'],
             'sales_still_owed': collection['still_owed'],
             'profit_collected': collection['profit_collected'],
@@ -641,20 +671,18 @@ def profit_report(request):
 def money_in_report(request):
     start, end = _range_from_params(request)
     days = _daily_money_in(start, end)
-    headers = ['Date', 'Sales', 'Debts Paid', 'Payments', 'Debts Paid vs Sales', 'Total Money In']
-    pct = lambda debts, sales: f"{round(debts / sales * 100)}%" if sales else '-'
-    rows = [[d['date'], d['sales'], d['debt_payments'], d['debt_payments_count'],
-             pct(d['debt_payments'], d['sales']), d['total']]
+    headers = ['Date', 'Sales', 'Paid at Sale', 'Debts Paid', 'Expenses Paid', 'Net Cash']
+    rows = [[d['date'], d['sales'], d['paid_at_sale'], d['debt_payments'], d['expenses'], d['net_cash']]
             for d in reversed(days)]
-    sales = sum(d['sales'] for d in days)
-    debts = sum(d['debt_payments'] for d in days)
+    total = lambda k: sum(d[k] for d in days)
     summary = {**_shop_meta(),
-               'Total Sales': sales,
-               'Total Debts Paid': debts,
-               'Debt Payments': sum(d['debt_payments_count'] for d in days),
-               'Debts Paid vs Sales': pct(debts, sales),
-               'Total Money In': sales + debts}
-    return _respond(request, f"Sales vs Debts Paid by Day ({start} to {end})",
+               'Total Sales': total('sales'),
+               'Paid at Sale': total('paid_at_sale'),
+               'Debts Paid': total('debt_payments'),
+               'Debt Payments': total('debt_payments_count'),
+               'Expenses Paid': total('expenses'),
+               'Net Cash (paid at sale + debts paid - expenses)': total('net_cash')}
+    return _respond(request, f"Daily Cash ({start} to {end})",
                     headers, rows, summary)
 
 
