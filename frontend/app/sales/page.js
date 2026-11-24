@@ -29,9 +29,12 @@ export default function SalesPage() {
   const [form, setForm] = useState({
     reference: '', customer: null, customer_name: '', customer_phone: '',
     payment_type: 'cash', payment_method: 'cash', amount_paid: '', notes: '', sale_date: '',
+    override_credit_limit: false,
   });
   const [items, setItems] = useState([{ product: '', quantity: 1, unit_price: 0 }]);
   const [error, setError] = useState('');
+  // Balance and credit limit of the customer picked from the list
+  const [pickedCustomer, setPickedCustomer] = useState(null);
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState(null);
   const showProfit = can.viewInventoryCost(user);
@@ -96,13 +99,25 @@ export default function SalesPage() {
   };
 
   const resetForm = () => {
+    setPickedCustomer(null);
     setForm({
       reference: generateRef(), customer: null, customer_name: '', customer_phone: '',
       payment_type: 'cash', payment_method: 'cash', amount_paid: '', notes: '', sale_date: '',
+    override_credit_limit: false,
     });
     setItems([{ product: '', quantity: 1, unit_price: 0 }]);
   };
   useEffect(() => { resetForm(); }, []);
+
+  const unpaidNow = Math.max(0, total - (parseFloat(form.amount_paid) || 0));
+  const creditCheck = (() => {
+    const c = pickedCustomer;
+    if (!c || c.credit_limit === null || c.credit_limit === undefined) return null;
+    if (form.payment_type === 'cash' || unpaidNow <= 0) return null;
+    const owed = c.balance || 0;
+    const room = Math.max(0, c.credit_limit - owed);
+    return { owed, limit: c.credit_limit, room, unpaid: unpaidNow, over: unpaidNow > room };
+  })();
 
   const submit = async (e) => {
     e.preventDefault();
@@ -268,9 +283,9 @@ export default function SalesPage() {
               placeholder={form.payment_type === 'cash' ? 'Walk-in' : 'Required for credit'}
               required={form.payment_type !== 'cash'} value={form.customer_name}
               picked={!!form.customer}
-              onType={(text) => setForm({ ...form, customer: null, customer_name: text })}
-              onPick={(c) => setForm({ ...form, customer: c.id, customer_name: c.name, customer_phone: c.phone || '' })}
-              onClear={() => setForm({ ...form, customer: null, customer_name: '', customer_phone: '' })} /></div>
+              onType={(text) => { setPickedCustomer(null); setForm({ ...form, customer: null, customer_name: text, override_credit_limit: false }); }}
+              onPick={(c) => { setPickedCustomer(c); setForm({ ...form, customer: c.id, customer_name: c.name, customer_phone: c.phone || '', override_credit_limit: false }); }}
+              onClear={() => { setPickedCustomer(null); setForm({ ...form, customer: null, customer_name: '', customer_phone: '', override_credit_limit: false }); }} /></div>
           <div><label>Customer Phone</label>
             <input placeholder="Optional" value={form.customer_phone} readOnly={!!form.customer}
               title={form.customer ? 'Change the phone on the Customers page' : undefined}
@@ -311,6 +326,35 @@ export default function SalesPage() {
             <b>Balance owed:</b> {money(Math.max(0, total - (parseFloat(form.amount_paid) || 0)))}
             {' '}— will be added to {form.customer_name.trim() || 'the customer'}&apos;s debt
             {' '}(combined with any balance they already owe).
+          </div>
+        )}
+
+        {creditCheck && (
+          <div className={`mb-4 p-3 rounded-lg border text-sm ${creditCheck.over
+            ? 'bg-red-50 border-red-200 text-red-800' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
+            {creditCheck.over ? (
+              <>
+                <b>⚠ Over credit limit.</b> {form.customer_name} already owes {money(creditCheck.owed)} and their
+                limit is {money(creditCheck.limit)}, so they can take at most <b>{money(creditCheck.room)}</b> more
+                on credit. This sale leaves {money(creditCheck.unpaid)} unpaid — take at least{' '}
+                <b>{money(creditCheck.unpaid - creditCheck.room)}</b> more now.
+                {can.editCustomers(user) ? (
+                  <label className="flex items-center gap-2 mt-2 font-medium">
+                    <input type="checkbox" className="w-4 h-4" checked={form.override_credit_limit}
+                      onChange={(e) => setForm({ ...form, override_credit_limit: e.target.checked })} />
+                    Allow over limit (recorded on the sale)
+                  </label>
+                ) : (
+                  <span> Ask a manager if this sale must go through.</span>
+                )}
+              </>
+            ) : (
+              <>
+                <b>Credit limit:</b> {form.customer_name} owes {money(creditCheck.owed)} of their{' '}
+                {money(creditCheck.limit)} limit. After this sale: {money(creditCheck.owed + creditCheck.unpaid)}{' '}
+                ({money(creditCheck.room - creditCheck.unpaid)} left).
+              </>
+            )}
           </div>
         )}
 

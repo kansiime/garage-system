@@ -141,6 +141,7 @@ export default function CustomersPage() {
               <th className="text-right">Sales</th>
               <th className="text-right">Total Spent</th>
               <th className="text-right">Outstanding</th>
+              <th className="text-right">Credit Limit</th>
               <th>Last Visit</th>
               <th></th>
             </tr>
@@ -148,7 +149,7 @@ export default function CustomersPage() {
           <tbody>
             {pg.pageItems.length === 0 && !loading && (
               <tr>
-                <td colSpan={7} className="text-center text-slate-400 py-8">
+                <td colSpan={8} className="text-center text-slate-400 py-8">
                   {search ? `No customers match "${search}".` : 'No customers yet — they appear as soon as you make a sale.'}
                 </td>
               </tr>
@@ -166,6 +167,15 @@ export default function CustomersPage() {
                 <td className="text-right font-semibold">{money(c.total_spent)}</td>
                 <td className={`text-right font-semibold ${c.balance > 0 ? 'text-red-600' : 'text-slate-400'}`}>
                   {c.balance > 0 ? money(c.balance) : '—'}
+                </td>
+                <td className="text-right text-sm">
+                  {c.credit_limit === null || c.credit_limit === undefined ? (
+                    <span className="text-slate-400">—</span>
+                  ) : (
+                    <span className={c.balance > c.credit_limit ? 'text-red-600 font-semibold' : 'text-slate-700'}>
+                      {money(c.credit_limit)}{c.balance > c.credit_limit && ' ⚠ over'}
+                    </span>
+                  )}
                 </td>
                 <td className="text-sm text-slate-500">{c.last_visit}</td>
                 <td className="text-right">

@@ -61,6 +61,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
                 'sale_count': s.get('count', 0),
                 'total_spent': float(s.get('spent') or ZERO),
                 'balance': float(balances.get(c.id) or ZERO),
+                'credit_limit': float(c.credit_limit) if c.credit_limit is not None else None,
                 'last_visit': _local(last), '_sort': last,
             })
         rows.sort(key=lambda r: r.pop('_sort'), reverse=True)
@@ -80,6 +81,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         shop = GarageSettings.load()
         return Response({
             'id': c.id, 'name': c.name, 'phone': c.phone, 'notes': c.notes,
+            'credit_limit': float(c.credit_limit) if c.credit_limit is not None else None,
             'currency': shop.currency_symbol or shop.currency_code or 'UGX',
             'summary': {
                 'sale_count': len(sales),
