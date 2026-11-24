@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import api, { downloadFile } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
+import PeriodPicker, { DEFAULT_PERIOD, periodQuery, periodRange } from '@/components/PeriodPicker';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -14,31 +15,28 @@ const DEBTS_COLOR = '#d97706';
 const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#ec4899'];
 
 export default function ReportsPage() {
-  const [period, setPeriod] = useState('month');
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
+  const [period, setPeriod] = useState({ ...DEFAULT_PERIOD, key: 'month' });
+  const range = periodRange(period);
+  const rangeKey = range ? `${range.start}|${range.end}` : '';
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloadError, setDownloadError] = useState('');
 
   // Build query string for downloads using `output=` (not `format=`)
   const buildQuery = (fmt) => {
-    const p = new URLSearchParams({ period, output: fmt });
-    if (period === 'custom') { p.set('start', start); p.set('end', end); }
-    return p.toString();
+    return `${periodQuery(period)}&output=${fmt}`;
   };
 
   const load = () => {
+    if (!range) return; // custom dates not filled in yet
     setLoading(true);
-    const q = new URLSearchParams({ period });
-    if (period === 'custom') { q.set('start', start); q.set('end', end); }
-    api.get(`/reports/overview/?${q.toString()}`)
+    api.get(`/reports/overview/?${periodQuery(period)}`)
       .then((r) => setData(r.data))
       .catch(() => setDownloadError('Could not load report data.'))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [period, start, end]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [rangeKey]);
 
   const download = async (key, fmt) => {
     setDownloadError('');
@@ -74,65 +72,55 @@ export default function ReportsPage() {
       )}
 
       {/* Period picker */}
-      <div className="card mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div>
-            <label>Period</label>
-            <select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              <option value="today">Today</option>
-              <option value="week">Last 7 Days</option>
-              <option value="month">This Month</option>
-              <option value="year">This Year</option>
-              <option value="custom">Custom</option>
-            </select>
-          </div>
-          {period === 'custom' && (
-            <>
-              <div><label>Start</label>
-                <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></div>
-              <div><label>End</label>
-                <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></div>
-            </>
-          )}
-        </div>
+      <div className="mb-6">
+        <PeriodPicker value={period} onChange={setPeriod} />
       </div>
 
       {loading && <p className="text-slate-500 text-sm mb-4">Loading report…</p>}
 
       {data && (
         <>
-          {/* KPIs */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <Kpi label="Total Sales" value={money(data.kpis.total_sales)} />
-            <Kpi label="Debt Payments Received" value={money(data.kpis.debt_payments_received || 0)} accent="amber"
-                 hint={data.kpis.total_sales
-                   ? `${Math.round(((data.kpis.debt_payments_received || 0) / data.kpis.total_sales) * 100)}% of sales · ${data.kpis.debt_payments_count || 0} payments`
-                   : `${data.kpis.debt_payments_count || 0} payments`} />
-            <Kpi label="Gross Profit" value={money(data.kpis.gross_profit || data.kpis.total_profit)}
-                 accent="green" hint={`${data.kpis.gross_margin}% margin`} />
-            <Kpi label="Total Expenses" value={money(data.kpis.total_expenses || 0)} accent="red" />
-            <Kpi label="Profit Lost on Returns" value={money(data.kpis.returns_profit_lost || 0)} accent="amber"
-                 hint={`${money(data.kpis.total_returns || 0)} returned`} />
-            <Kpi label="Net Profit" value={money(data.kpis.net_profit || 0)}
-                 accent={(data.kpis.net_profit || 0) >= 0 ? 'green' : 'red'}
-                 hint={`${data.kpis.net_margin || 0}% net margin`} />
-            <Kpi label="Profit Received" value={money(data.kpis.profit_collected || 0)} accent="green"
-                 hint={`${money(data.kpis.sales_collected || 0)} of sales paid`} />
-            <Kpi label="Profit Still in Debts" value={money(data.kpis.profit_in_debts || 0)} accent="amber"
-                 hint={`${money(data.kpis.sales_still_owed || 0)} of sales unpaid`} />
-            <Kpi label="Net Profit Received" value={money(data.kpis.net_profit_received || 0)}
-                 accent={(data.kpis.net_profit_received || 0) >= 0 ? 'green' : 'red'}
-                 hint="Only profit actually paid, after expenses & returns" />
-            <Kpi label="Purchases" value={money(data.kpis.total_purchases)} accent="amber" />
-            <Kpi label="Transactions" value={data.kpis.transaction_count} accent="purple"
-                 hint={`Avg ${money(data.kpis.average_sale)}`} />
-            <Kpi label="Receivables" value={money(data.kpis.receivables)} accent="amber" />
-            <Kpi label="Payables" value={money(data.kpis.payables)} accent="red" />
-            <Kpi label="Stock Value" value={money(data.kpis.stock_value)} />
-            <Kpi label="Gross Margin" value={`${data.kpis.gross_margin}%`} accent="green" />
-            <Kpi label="Net Margin" value={`${data.kpis.net_margin || 0}%`}
-                 accent={(data.kpis.net_margin || 0) >= 0 ? 'green' : 'red'} />
-          </div>
+          {/* KPIs, grouped into three compact panels */}
+          {(() => {
+            const k = data.kpis;
+            const debtsPaid = k.debt_payments_received || 0;
+            const debtShare = k.total_sales ? `${Math.round((debtsPaid / k.total_sales) * 100)}% of sales · ` : '';
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+                <MetricGroup title="Sales & money in">
+                  <Metric label="Total sales" value={money(k.total_sales)} dot="#2563eb"
+                    hint={`${k.transaction_count} sales · avg ${money(k.average_sale)}`} />
+                  <Metric label="Debts paid" value={money(debtsPaid)} dot="#d97706"
+                    hint={`${debtShare}${k.debt_payments_count || 0} payments`} />
+                  <Metric label="Purchases" value={money(k.total_purchases)} />
+                  <Metric label="Expenses" value={money(k.total_expenses || 0)} />
+                </MetricGroup>
+
+                <MetricGroup title="Profit">
+                  <Metric label="Gross profit" value={money(k.gross_profit || k.total_profit)}
+                    hint={`${k.gross_margin}% margin`} />
+                  <Metric label="Lost on returns" value={money(k.returns_profit_lost || 0)}
+                    hint={`${money(k.total_returns || 0)} returned`} />
+                  <Metric label="Net profit" value={money(k.net_profit || 0)} span
+                    negative={(k.net_profit || 0) < 0}
+                    hint={`${k.net_margin || 0}% net margin · after expenses & returns`} />
+                </MetricGroup>
+
+                <MetricGroup title="Money in hand & balances">
+                  <Metric label="Profit received" value={money(k.profit_collected || 0)} dot="#0d9488"
+                    hint={`${money(k.sales_collected || 0)} of sales paid`} />
+                  <Metric label="Profit in debts" value={money(k.profit_in_debts || 0)} dot="#d97706"
+                    hint={`${money(k.sales_still_owed || 0)} of sales unpaid`} />
+                  <Metric label="Net profit received" value={money(k.net_profit_received || 0)} span
+                    negative={(k.net_profit_received || 0) < 0}
+                    hint="Profit actually paid, after expenses & returns" />
+                  <Metric label="Customers owe" value={money(k.receivables)} />
+                  <Metric label="You owe suppliers" value={money(k.payables)} />
+                  <Metric label="Stock value" value={money(k.stock_value)} span />
+                </MetricGroup>
+              </div>
+            );
+          })()}
 
           {/* Cash vs Credit */}
           {data.cash_vs_credit && (
@@ -480,12 +468,26 @@ function DailyMoneyIn({ days, money }) {
   );
 }
 
-function Kpi({ label, value, accent = '', hint }) {
+function MetricGroup({ title, children }) {
   return (
-    <div className={`stat-card ${accent}`}>
-      <p className="stat-label">{label}</p>
-      <p className="stat-value">{value}</p>
-      {hint && <p className="text-xs text-slate-400 mt-1">{hint}</p>}
+    <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-3">{title}</p>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-3">{children}</div>
+    </div>
+  );
+}
+
+function Metric({ label, value, hint, dot, span, negative }) {
+  return (
+    <div className={`min-w-0 ${span ? 'col-span-2 pt-3 border-t border-slate-100' : ''}`}>
+      <p className="flex items-center gap-1.5 text-xs text-slate-500">
+        {dot && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: dot }} />}
+        {label}
+      </p>
+      <p className={`mt-0.5 font-semibold tabular-nums truncate ${span ? 'text-lg' : 'text-base'} ${negative ? 'text-red-600' : 'text-slate-900'}`}>
+        {value}
+      </p>
+      {hint && <p className="text-[11px] text-slate-400 leading-snug mt-0.5">{hint}</p>}
     </div>
   );
 }

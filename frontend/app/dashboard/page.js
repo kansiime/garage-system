@@ -5,6 +5,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import api from '@/lib/api';
 import { formatMoney } from '@/lib/format';
 import { useUser, can } from '@/lib/useUser';
+import PeriodPicker, { DEFAULT_PERIOD, periodQuery, periodRange } from '@/components/PeriodPicker';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
@@ -28,17 +29,39 @@ const shortMoney = (n) => {
   return String(Math.round(n));
 };
 
+const PERIOD_KEY = 'dashboard-period';
+
 export default function Dashboard() {
   const user = useUser();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
   const [missedCashUps, setMissedCashUps] = useState([]);
+  const [period, setPeriod] = useState(DEFAULT_PERIOD);
 
+  // Remember the period this viewer last picked
   useEffect(() => {
-    api.get('/reports/dashboard/')
-      .then((r) => setData(r.data))
-      .catch(() => setError('Could not load dashboard data.'));
+    try {
+      const saved = JSON.parse(localStorage.getItem(PERIOD_KEY) || 'null');
+      if (saved?.key) setPeriod({ ...DEFAULT_PERIOD, ...saved });
+    } catch { /* storage unavailable: keep the default */ }
   }, []);
+  const choosePeriod = (p) => {
+    setPeriod(p);
+    try { localStorage.setItem(PERIOD_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+  };
+
+  const range = periodRange(period);
+  const rangeKey = range ? `${range.start}|${range.end}` : '';
+  useEffect(() => {
+    if (!range) return; // e.g. custom dates not filled in yet
+    setLoading(true);
+    api.get(`/reports/dashboard/?${periodQuery(period)}`)
+      .then((r) => { setData(r.data); setError(''); })
+      .catch(() => setError('Could not load dashboard data.'))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rangeKey]);
 
   const cashesUp = can.cashUp(user);
   useEffect(() => {
@@ -48,14 +71,19 @@ export default function Dashboard() {
 
   const currency = data?.currency || 'UGX';
   const money = (n) => formatMoney(n, currency);
+  const sel = data?.selected;
+  const label = range?.label || 'today';
+  const Label = label.charAt(0).toUpperCase() + label.slice(1);
 
-  const trend = (data?.trend || []).map((d) => ({
+  const byMonth = sel?.trend?.unit === 'month';
+  const points = sel?.trend?.points || [];
+  const trend = points.map((d) => ({
     ...d,
-    label: new Date(`${d.date}T00:00:00`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' }),
+    label: new Date(`${d.date}T00:00:00`).toLocaleDateString(undefined, byMonth
+      ? { month: 'short', year: '2-digit' }
+      : points.length <= 14 ? { weekday: 'short', day: 'numeric' } : { day: 'numeric', month: 'short' }),
   }));
-  const weekSales = trend.reduce((s, d) => s + d.total, 0);
-  const weekProfit = trend.reduce((s, d) => s + d.profit, 0);
-  const weekDebtPayments = trend.reduce((s, d) => s + (d.debt_payments || 0), 0);
+  const margin = sel?.sales.total ? Math.round((sel.sales.profit / sel.sales.total) * 100) : null;
 
   return (
     <ProtectedRoute>
@@ -77,6 +105,12 @@ export default function Dashboard() {
         </Link>
       )}
 
+      {/* Period: every figure below follows it, except current balances */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <PeriodPicker value={period} onChange={choosePeriod} />
+        {loading && data && <span className="text-xs text-slate-400">Updating…</span>}
+      </div>
+
       {/* Hero */}
       <div className="relative overflow-hidden rounded-2xl mb-6 p-6 md:p-8 text-white"
         style={{ background: 'linear-gradient(135deg, #1e3a8a 0%, #2563eb 55%, #0d9488 100%)' }}>
@@ -92,16 +126,17 @@ export default function Dashboard() {
               {data?.business_name || 'Dashboard'}
             </h1>
             <div className="mt-5">
-              <p className="text-xs uppercase tracking-wider text-blue-100 font-semibold">Today&apos;s sales</p>
-              {data ? (
-                <p className="text-4xl md:text-5xl font-bold mt-1 tabular-nums">{money(data.today.total)}</p>
+              <p className="text-xs uppercase tracking-wider text-blue-100 font-semibold">Sales · {label}</p>
+              {sel ? (
+                <p className="text-4xl md:text-5xl font-bold mt-1 tabular-nums">{money(sel.sales.total)}</p>
               ) : (
                 <div className="h-12 w-64 bg-white/20 rounded-lg mt-1 animate-pulse" />
               )}
-              {data && (
+              {sel && (
                 <p className="text-sm text-blue-100 mt-2">
-                  {data.today.count} sale{data.today.count !== 1 && 's'} ·{' '}
-                  <span className="text-white font-semibold">{money(data.today.profit)}</span> profit
+                  {sel.sales.count} sale{sel.sales.count !== 1 && 's'} ·{' '}
+                  <span className="text-white font-semibold">{money(sel.sales.profit)}</span> profit ·{' '}
+                  <span className="text-white font-semibold">{money(sel.debt_payments.total)}</span> debts paid
                 </p>
               )}
             </div>
@@ -116,7 +151,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {!data && !error && (
+      {!sel && !error && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
             <div key={i} className="card animate-pulse">
@@ -127,68 +162,55 @@ export default function Dashboard() {
         </div>
       )}
 
-      {data && (
-        <>
+      {sel && (
+        <div className={loading ? 'opacity-60 transition-opacity' : 'transition-opacity'}>
           {/* KPI tiles */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <Kpi icon="📅" tint="bg-blue-50" label="Sales this month" value={money(data.month.total)}
-              hint={`${data.month.count} sales`} />
-            <Kpi icon="📈" tint="bg-teal-50" label="Gross profit this month" value={money(data.month.profit)}
-              hint={data.month.total ? `${Math.round((data.month.profit / data.month.total) * 100)}% margin` : 'No sales yet'} />
-            <Kpi icon="💼" tint={data.net_profit_month >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
-              label="Net profit this month" value={money(data.net_profit_month)}
-              valueClass={data.net_profit_month < 0 ? 'text-red-600' : ''}
+            <Kpi icon="🧾" tint="bg-amber-50" label="Debts paid" value={money(sel.debt_payments.total)}
+              hint={`${sel.debt_payments.count} payment${sel.debt_payments.count !== 1 ? 's' : ''}${
+                sel.sales.total ? ` · ${Math.round((sel.debt_payments.total / sel.sales.total) * 100)}% of sales` : ''}`} />
+            <Kpi icon="📈" tint="bg-teal-50" label="Gross profit" value={money(sel.sales.profit)}
+              hint={margin === null ? 'No sales' : `${margin}% margin`} />
+            <Kpi icon="💼" tint={sel.net_profit >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
+              label="Net profit" value={money(sel.net_profit)}
+              valueClass={sel.net_profit < 0 ? 'text-red-600' : ''}
               hint="After expenses & returns" />
-            <Kpi icon="📦" tint="bg-amber-50" label="Stock value" value={money(data.stock_value)}
-              hint={`${money(data.purchases_month)} bought this month`} />
+            <Kpi icon="📦" tint="bg-blue-50" label="Stock value" value={money(data.stock_value)}
+              hint={`${money(sel.purchases)} bought ${label}`} />
           </div>
 
-          {/* Sales vs debt payments received */}
-          <div className="card mb-6">
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-              <p className="card-title mb-0">Sales vs debt payments received</p>
-              {can.recordPayment(user) && (
-                <Link href="/debts" className="text-sm text-blue-600 hover:underline">Debts →</Link>
-              )}
+          {/* Money in, and how much of the profit is actually in hand */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+            <div className="card">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                <p className="card-title mb-0">Sales vs debt payments received</p>
+                {can.recordPayment(user) && (
+                  <Link href="/debts" className="text-sm text-blue-600 hover:underline">Debts →</Link>
+                )}
+              </div>
+              <Compare label={Label} money={money} sales={sel.sales.total}
+                debts={sel.debt_payments.total} debtCount={sel.debt_payments.count} />
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <Compare label="Today" money={money}
-                sales={data.today.total} debts={data.debt_payments_today?.total || 0}
-                debtCount={data.debt_payments_today?.count || 0} />
-              <Compare label="Last 7 days" money={money}
-                sales={weekSales} debts={weekDebtPayments} />
-              <Compare label="This month" money={money}
-                sales={data.month.total} debts={data.debt_payments_month?.total || 0}
-                debtCount={data.debt_payments_month?.count || 0} />
-            </div>
-          </div>
-
-          {/* Profit actually received vs profit still sitting in debts */}
-          {data.collection_month && (
-            <div className="card mb-6">
+            <div className="card">
               <p className="card-title mb-1">Profit in hand vs profit still in debts</p>
-              <p className="text-sm text-slate-500 mb-4">
+              <p className="text-xs text-slate-500 mb-3">
                 Credit sales count as profit straight away, but you only have that money once the customer pays.
               </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <ProfitSplit label="Today" split={data.collection_today} money={money} />
-                <ProfitSplit label="This month" split={data.collection_month} money={money}
-                  netReceived={data.collection_month.profit_collected - data.expenses_month
-                    - (data.returns_month?.profit_lost || 0)} />
-              </div>
+              <ProfitSplit label={Label} split={sel.collection} money={money}
+                netReceived={sel.collection.profit_collected - sel.expenses - sel.returns_profit_lost} />
             </div>
-          )}
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-            {/* 7-day chart */}
+            {/* Chart for the period */}
             <div className="card lg:col-span-2">
               <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
                 <div>
-                  <p className="card-title mb-1">Last 7 days</p>
+                  <p className="card-title mb-1">{Label}{byMonth ? ' · by month' : ''}</p>
                   <p className="text-sm text-slate-500">
-                    <b className="text-slate-900">{money(weekSales)}</b> sales ·{' '}
-                    <b className="text-slate-900">{money(weekProfit)}</b> profit ·{' '}
-                    <b className="text-slate-900">{money(weekDebtPayments)}</b> debts paid
+                    <b className="text-slate-900">{money(sel.sales.total)}</b> sales ·{' '}
+                    <b className="text-slate-900">{money(sel.sales.profit)}</b> profit ·{' '}
+                    <b className="text-slate-900">{money(sel.debt_payments.total)}</b> debts paid
                   </p>
                 </div>
                 <div className="flex items-center gap-4 text-xs text-slate-600">
@@ -201,7 +223,8 @@ export default function Dashboard() {
                 <ResponsiveContainer>
                   <BarChart data={trend} barGap={2} barCategoryGap="25%">
                     <CartesianGrid vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false}
+                      minTickGap={8} />
                     <YAxis tickFormatter={shortMoney} tick={{ fontSize: 11, fill: '#64748b' }}
                       axisLine={false} tickLine={false} width={44} />
                     <Tooltip content={<ChartTooltip money={money} />} cursor={{ fill: '#f8fafc' }} />
@@ -213,20 +236,19 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Money owed */}
+            {/* Money owed (current balances, whatever the period) */}
             <div className="card flex flex-col gap-3">
-              <p className="card-title mb-0">Money owed</p>
+              <p className="card-title mb-0">Money owed now</p>
               <OwedCard href="/debts" tone="amber" label="Customers owe you"
                 value={money(data.receivables)} count={data.receivables_count} />
               <OwedCard href="/debts" tone="red" label="You owe suppliers"
                 value={money(data.payables)} count={data.payables_count} />
               <div className="mt-auto pt-3 border-t border-slate-100">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">This month</p>
-                <Line label="Gross profit" value={money(data.month.profit)} />
-                <Line label="Expenses" value={`− ${money(data.expenses_month)}`} muted />
-                <Line label="Profit lost on returns" value={`− ${money(data.returns_month?.profit_lost || 0)}`} muted />
-                <Line label="Net profit" value={money(data.net_profit_month)} strong
-                  danger={data.net_profit_month < 0} />
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">{Label}</p>
+                <Line label="Gross profit" value={money(sel.sales.profit)} />
+                <Line label="Expenses" value={`− ${money(sel.expenses)}`} muted />
+                <Line label="Profit lost on returns" value={`− ${money(sel.returns_profit_lost)}`} muted />
+                <Line label="Net profit" value={money(sel.net_profit)} strong danger={sel.net_profit < 0} />
               </div>
             </div>
           </div>
@@ -285,7 +307,7 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-        </>
+        </div>
       )}
     </ProtectedRoute>
   );
