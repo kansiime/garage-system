@@ -246,6 +246,25 @@ def reports_overview(request):
     total_sales = sales_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
     debt_payments_qs = _debt_payments_received(start, end)
     debt_payments_total = debt_payments_qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    # Sales and debt payments for every day in the range (zero days included)
+    tz = timezone.get_current_timezone()
+    daily = {start + timedelta(days=n): {'sales': Decimal('0'), 'debt_payments': Decimal('0'),
+                                         'debt_payments_count': 0}
+             for n in range((end - start).days + 1)}
+    for s in sales_qs.only('created_at', 'total_amount'):
+        daily[timezone.localtime(s.created_at, tz).date()]['sales'] += s.total_amount
+    for p in debt_payments_qs.only('created_at', 'amount'):
+        day = daily[timezone.localtime(p.created_at, tz).date()]
+        day['debt_payments'] += p.amount
+        day['debt_payments_count'] += 1
+    daily_money_in = [
+        {'date': d.strftime('%Y-%m-%d'), 'sales': float(v['sales']),
+         'debt_payments': float(v['debt_payments']),
+         'debt_payments_count': v['debt_payments_count'],
+         'total': float(v['sales'] + v['debt_payments'])}
+        for d, v in daily.items()
+    ]
+
     total_purchases = purchases_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
 
     revenue_dec = sum((i.quantity * i.unit_price for i in items_qs), Decimal('0'))
@@ -435,6 +454,7 @@ def reports_overview(request):
         },
         'cash_vs_credit': {'cash': cash_stats, 'credit': credit_stats, 'partial': partial_stats},
         'sales_trend': sales_trend,
+        'daily_money_in': daily_money_in,
         'top_products': top_products,
         'top_customers': top_customers,
         'payment_mix': payment_mix,

@@ -68,6 +68,30 @@ class DashboardTests(APITestCase):
         self.assertEqual(kpis['debt_payments_received'], 120)
         self.assertEqual(kpis['debt_payments_count'], 1)
 
+    def test_overview_lists_sales_and_debts_paid_for_each_day(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from apps.debts.models import Debt, DebtPayment
+        today = timezone.localdate()
+        debt = Debt.objects.create(debt_type='receivable', party_name='Ann', amount=500)
+        old = DebtPayment.objects.create(debt=debt, amount=200, method='cash')
+        DebtPayment.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=2))
+        DebtPayment.objects.create(debt=debt, amount=75, method='mobile')
+        self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'amount_paid': 100,
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 100}],
+        }, format='json')
+        start = today - timedelta(days=3)
+        daily = self.client.get(
+            f'/api/reports/overview/?period=custom&start={start}&end={today}'
+        ).data['daily_money_in']
+        self.assertEqual([d['date'] for d in daily],
+                         [str(start + timedelta(days=n)) for n in range(4)])
+        self.assertEqual(daily[1]['debt_payments'], 200)
+        self.assertEqual(daily[1]['sales'], 0)
+        self.assertEqual(daily[3], {'date': str(today), 'sales': 100, 'debt_payments': 75,
+                                    'debt_payments_count': 1, 'total': 175})
+
 
 class ReturnsProfitTests(APITestCase):
     """A sales return only loses the margin (goods go back to stock);
