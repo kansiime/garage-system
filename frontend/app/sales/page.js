@@ -339,7 +339,7 @@ export default function SalesPage() {
                 on credit. This sale leaves {money(creditCheck.unpaid)} unpaid — take at least{' '}
                 <b>{money(creditCheck.unpaid - creditCheck.room)}</b> more now.
                 {can.editCustomers(user) ? (
-                  <label className="flex items-center gap-2 mt-2 font-medium">
+                  <label className="!flex items-center gap-2 mt-2 !text-sm !normal-case !tracking-normal !text-red-800 font-medium cursor-pointer">
                     <input type="checkbox" className="w-4 h-4" checked={form.override_credit_limit}
                       onChange={(e) => setForm({ ...form, override_credit_limit: e.target.checked })} />
                     Allow over limit (recorded on the sale)
