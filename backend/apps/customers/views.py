@@ -135,6 +135,22 @@ class CustomerViewSet(viewsets.ModelViewSet):
         log(self.request, 'delete', 'Customer', instance.id, f'Deleted customer {instance.name}')
         instance.delete()
 
+    @action(detail=False, methods=['get'], url_path='credit-check')
+    def credit_check(self, request):
+        """The existing customer a name/phone would be matched to (nothing is
+        created), with what they owe and their credit limit, so screens can
+        warn before saving."""
+        from .models import amount_owed
+        c = services.find_existing(request.query_params.get('name', ''),
+                                   request.query_params.get('phone', ''))
+        if c is None:
+            return Response({'found': False})
+        return Response({
+            'found': True, 'id': c.id, 'name': c.name,
+            'balance': float(amount_owed(c)),
+            'credit_limit': float(c.credit_limit) if c.credit_limit is not None else None,
+        })
+
     @action(detail=True, methods=['post'])
     def merge(self, request, pk=None):
         """Merge customer `other` into this one (same person entered twice)."""

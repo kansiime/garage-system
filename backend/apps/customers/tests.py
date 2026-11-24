@@ -140,3 +140,33 @@ class CreditLimitTests(APITestCase):
         rows = self.client.get('/api/customers/').data['customers']
         self.assertEqual(rows[0]['credit_limit'], 800)
         self.assertEqual(self.client.get(f'/api/customers/{self.ann.id}/').data['credit_limit'], 800)
+
+
+    def test_credit_check_finds_typed_customer_without_creating_one(self):
+        self.client.force_authenticate(self.cashier)
+        self.sell(300)
+        res = self.client.get('/api/customers/credit-check/?name=ann&phone=').data
+        self.assertEqual(res, {'found': True, 'id': self.ann.id, 'name': 'Ann',
+                               'balance': 300, 'credit_limit': 500})
+        res = self.client.get('/api/customers/credit-check/?name=Nobody&phone=0700000001').data
+        self.assertEqual(res, {'found': False})
+        self.assertEqual(Customer.objects.count(), 1)
+
+    def test_manual_debt_respects_the_limit(self):
+        self.client.force_authenticate(self.admin)
+        self.sell(400)
+        body = {'debt_type': 'receivable', 'party_name': 'Ann', 'party_phone': '0772000111',
+                'amount': 200}
+        res = self.client.post('/api/debts/', body, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('at most 100 more', str(res.data['credit_limit']))
+        res = self.client.post('/api/debts/', {**body, 'override_credit_limit': True}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertIn('Allowed over credit limit by boss', Debt.objects.get(pk=res.data['id']).charges.last().notes)
+        # Within the limit, and payables, are never checked
+        self.assertEqual(self.client.post('/api/debts/', {**body, 'party_name': 'Bob',
+                                                          'party_phone': '0711111111'},
+                                          format='json').status_code, 201)
+        self.assertEqual(self.client.post('/api/debts/', {**body, 'debt_type': 'payable',
+                                                          'amount': 99999},
+                                          format='json').status_code, 201)

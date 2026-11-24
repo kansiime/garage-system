@@ -182,27 +182,21 @@ class SaleSerializer(serializers.ModelSerializer):
         return sale
 
     def _check_credit_limit(self, customer, unpaid, override, user):
-        from apps.customers.models import Customer, amount_owed
         """Returns True when an admin/manager let the sale go over the limit."""
+        from apps.customers.models import Customer
+        from apps.customers.services import credit_limit_message, credit_limit_problem
         if unpaid <= 0 or customer is None:
             return False
         # Lock the customer so two sales at once can't both slip under the limit
         customer = Customer.objects.select_for_update().get(pk=customer.pk)
-        if customer.credit_limit is None:
+        problem = credit_limit_problem(customer, unpaid)
+        if problem is None:
             return False
-        owed = amount_owed(customer)
-        if owed + unpaid <= customer.credit_limit:
-            return False
-        if override and getattr(user, 'role', None) in ('admin', 'manager'):
+        can_override = getattr(user, 'role', None) in ('admin', 'manager')
+        if override and can_override:
             return True
-        room = max(customer.credit_limit - owed, Decimal('0'))
-        raise serializers.ValidationError({'credit_limit': (
-            f'{customer.name} already owes {owed:,.0f} and their credit limit is '
-            f'{customer.credit_limit:,.0f}, so they can take at most {room:,.0f} more on credit. '
-            f'This sale would leave {unpaid:,.0f} unpaid. Take more payment now'
-            + (', or tick "Allow over limit".' if getattr(user, 'role', None) in ('admin', 'manager')
-               else ', or ask a manager to allow it.')
-        )})
+        raise serializers.ValidationError({'credit_limit': credit_limit_message(
+            customer, problem, can_override=can_override)})
 
     def _backdate(self, sale, sale_date, movement_ids):
         """Move the sale and everything it created onto `sale_date` (keeping the time of day)."""

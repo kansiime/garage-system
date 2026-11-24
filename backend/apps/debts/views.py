@@ -24,18 +24,41 @@ class DebtViewSet(viewsets.ModelViewSet):
     write_roles = ['admin', 'manager']
     open_write_actions = ['record_payment', 'add_follow_up']   # cashiers can take payments and log contact
 
+    def _check_credit_limit(self, request, data, notes):
+        """Refuse credit that takes a customer past their limit, unless the
+        request ticks override_credit_limit. Returns the notes to save."""
+        from apps.customers.models import Customer
+        from apps.customers.services import (
+            credit_limit_message, credit_limit_problem, find_existing)
+        customer = find_existing(data['party_name'], data.get('party_phone', ''))
+        if customer is None:
+            return notes
+        # create() runs in a transaction, so this lock holds until the debt is saved
+        customer = Customer.objects.select_for_update().get(pk=customer.pk)
+        problem = credit_limit_problem(customer, data['amount'])
+        if problem is None:
+            return notes
+        if str(request.data.get('override_credit_limit')).lower() in ('true', '1'):
+            return f"{notes}\nAllowed over credit limit by {request.user.username}.".strip()
+        raise ValidationError({'credit_limit': credit_limit_message(
+            customer, problem, can_override=True, what='This would add')})
+
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         """New credit for a party with an open debt is added to that debt."""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        notes = data.get('notes', '')
+        if data['debt_type'] == 'receivable':
+            notes = self._check_credit_limit(request, data, notes)
         debt, merged = services.add_charge(
             debt_type=data['debt_type'],
             party_name=data['party_name'],
             party_phone=data.get('party_phone', ''),
             amount=data['amount'],
             reference=data.get('reference', ''),
-            notes=data.get('notes', ''),
+            notes=notes,
             promised_date=data.get('promised_date'),
             user=request.user,
         )

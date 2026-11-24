@@ -12,6 +12,8 @@ import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp'
 import { useUser, can } from '@/lib/useUser';
 import { PAYMENT_METHODS, methodLabel } from '@/lib/paymentMethods';
 import CustomerNameInput from '@/components/CustomerNameInput';
+import CreditLimitWarning from '@/components/CreditLimitWarning';
+import { useCreditCheck, creditPosition } from '@/lib/useCreditCheck';
 
 const todayISO = () => {
   const d = new Date();
@@ -110,14 +112,11 @@ export default function SalesPage() {
   useEffect(() => { resetForm(); }, []);
 
   const unpaidNow = Math.max(0, total - (parseFloat(form.amount_paid) || 0));
-  const creditCheck = (() => {
-    const c = pickedCustomer;
-    if (!c || c.credit_limit === null || c.credit_limit === undefined) return null;
-    if (form.payment_type === 'cash' || unpaidNow <= 0) return null;
-    const owed = c.balance || 0;
-    const room = Math.max(0, c.credit_limit - owed);
-    return { owed, limit: c.credit_limit, room, unpaid: unpaidNow, over: unpaidNow > room };
-  })();
+  // A typed (not picked) name is looked up so the warning shows before saving
+  const typedCustomer = useCreditCheck(form.customer_name, form.customer_phone,
+    !form.customer && form.payment_type !== 'cash');
+  const creditCheck = form.payment_type === 'cash' ? null
+    : creditPosition(pickedCustomer || typedCustomer, unpaidNow);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -329,34 +328,9 @@ export default function SalesPage() {
           </div>
         )}
 
-        {creditCheck && (
-          <div className={`mb-4 p-3 rounded-lg border text-sm ${creditCheck.over
-            ? 'bg-red-50 border-red-200 text-red-800' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-            {creditCheck.over ? (
-              <>
-                <b>⚠ Over credit limit.</b> {form.customer_name} already owes {money(creditCheck.owed)} and their
-                limit is {money(creditCheck.limit)}, so they can take at most <b>{money(creditCheck.room)}</b> more
-                on credit. This sale leaves {money(creditCheck.unpaid)} unpaid — take at least{' '}
-                <b>{money(creditCheck.unpaid - creditCheck.room)}</b> more now.
-                {can.editCustomers(user) ? (
-                  <label className="!flex items-center gap-2 mt-2 !text-sm !normal-case !tracking-normal !text-red-800 font-medium cursor-pointer">
-                    <input type="checkbox" className="w-4 h-4" checked={form.override_credit_limit}
-                      onChange={(e) => setForm({ ...form, override_credit_limit: e.target.checked })} />
-                    Allow over limit (recorded on the sale)
-                  </label>
-                ) : (
-                  <span> Ask a manager if this sale must go through.</span>
-                )}
-              </>
-            ) : (
-              <>
-                <b>Credit limit:</b> {form.customer_name} owes {money(creditCheck.owed)} of their{' '}
-                {money(creditCheck.limit)} limit. After this sale: {money(creditCheck.owed + creditCheck.unpaid)}{' '}
-                ({money(creditCheck.room - creditCheck.unpaid)} left).
-              </>
-            )}
-          </div>
-        )}
+        <CreditLimitWarning position={creditCheck} money={money}
+          canOverride={can.editCustomers(user)} override={form.override_credit_limit}
+          onOverride={(v) => setForm({ ...form, override_credit_limit: v })} />
 
         <div className="border-t border-slate-100 pt-4">
           <div className="flex items-center justify-between mb-2">
