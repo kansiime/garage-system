@@ -163,6 +163,22 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* Profit actually received vs profit still sitting in debts */}
+          {data.collection_month && (
+            <div className="card mb-6">
+              <p className="card-title mb-1">Profit in hand vs profit still in debts</p>
+              <p className="text-sm text-slate-500 mb-4">
+                Credit sales count as profit straight away, but you only have that money once the customer pays.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ProfitSplit label="Today" split={data.collection_today} money={money} />
+                <ProfitSplit label="This month" split={data.collection_month} money={money}
+                  netReceived={data.collection_month.profit_collected - data.expenses_month
+                    - (data.returns_month?.profit_lost || 0)} />
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
             {/* 7-day chart */}
             <div className="card lg:col-span-2">
@@ -284,6 +300,43 @@ function Kpi({ icon, tint, label, value, hint, valueClass = '' }) {
         <p className={`text-xl font-bold text-slate-900 mt-1 tabular-nums truncate ${valueClass}`}>{value}</p>
         {hint && <p className="text-xs text-slate-500 mt-0.5">{hint}</p>}
       </div>
+    </div>
+  );
+}
+
+function ProfitSplit({ label, split, money, netReceived }) {
+  if (!split) return null;
+  const inHandPct = split.profit > 0 ? (split.profit_collected / split.profit) * 100 : 0;
+  const owedPct = split.profit > 0 ? Math.round((split.profit_in_debts / split.profit) * 100) : 0;
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">{label}</p>
+      <Line label="Profit made" value={money(split.profit)} />
+      <div className="flex justify-between py-1 text-sm">
+        <span className="flex items-center gap-1.5 text-slate-700">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: PROFIT }} />Received (in hand)
+        </span>
+        <b className="tabular-nums text-slate-900">{money(split.profit_collected)}</b>
+      </div>
+      <div className="flex justify-between py-1 text-sm">
+        <span className="flex items-center gap-1.5 text-slate-700">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: DEBTS }} />Still in debts
+        </span>
+        <b className="tabular-nums text-slate-900">{money(split.profit_in_debts)}</b>
+      </div>
+      <div className="flex h-2 rounded-full overflow-hidden bg-slate-100 mt-2 gap-0.5"
+        title={`Received ${money(split.profit_collected)} · Still in debts ${money(split.profit_in_debts)}`}>
+        {split.profit_collected > 0 && <div style={{ width: `${inHandPct}%`, background: PROFIT }} />}
+        {split.profit_in_debts > 0 && <div style={{ width: `${100 - inHandPct}%`, background: DEBTS }} />}
+      </div>
+      <p className="text-xs text-slate-500 mt-2">
+        {split.profit > 0 ? `${owedPct}% of the profit is not yet paid` : 'No profit yet'}
+        {split.still_owed > 0 ? ` · ${money(split.still_owed)} of these sales still owed` : ''}
+      </p>
+      {netReceived !== undefined && (
+        <Line label="Net profit received (after expenses & returns)" value={money(netReceived)} strong
+          danger={netReceived < 0} />
+      )}
     </div>
   );
 }

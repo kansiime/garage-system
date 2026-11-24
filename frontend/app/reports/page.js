@@ -116,6 +116,13 @@ export default function ReportsPage() {
             <Kpi label="Net Profit" value={money(data.kpis.net_profit || 0)}
                  accent={(data.kpis.net_profit || 0) >= 0 ? 'green' : 'red'}
                  hint={`${data.kpis.net_margin || 0}% net margin`} />
+            <Kpi label="Profit Received" value={money(data.kpis.profit_collected || 0)} accent="green"
+                 hint={`${money(data.kpis.sales_collected || 0)} of sales paid`} />
+            <Kpi label="Profit Still in Debts" value={money(data.kpis.profit_in_debts || 0)} accent="amber"
+                 hint={`${money(data.kpis.sales_still_owed || 0)} of sales unpaid`} />
+            <Kpi label="Net Profit Received" value={money(data.kpis.net_profit_received || 0)}
+                 accent={(data.kpis.net_profit_received || 0) >= 0 ? 'green' : 'red'}
+                 hint="Only profit actually paid, after expenses & returns" />
             <Kpi label="Purchases" value={money(data.kpis.total_purchases)} accent="amber" />
             <Kpi label="Transactions" value={data.kpis.transaction_count} accent="purple"
                  hint={`Avg ${money(data.kpis.average_sale)}`} />

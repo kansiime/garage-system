@@ -108,6 +108,35 @@ def _debt_payments_received(start, end):
     )
 
 
+def _collection_split(sales_qs):
+    """How much of the sales (and their profit) has actually been paid.
+
+    A sale's amount_paid grows as debt payments are allocated to it, so its
+    balance is what is still owed today. Profit is split in the same ratio:
+    a sale half paid for has half its profit collected, half still in debts.
+    """
+    sales_total = paid = profit = profit_owed = Decimal('0')
+    for sale in sales_qs.prefetch_related('items'):
+        sale_profit = sum(
+            (i.quantity * (i.unit_price - i.cost_price) for i in sale.items.all()),
+            Decimal('0'),
+        )
+        sales_total += sale.total_amount
+        paid += min(sale.amount_paid, sale.total_amount)
+        profit += sale_profit
+        owed = max(sale.total_amount - sale.amount_paid, Decimal('0'))
+        if sale.total_amount > 0 and owed > 0:
+            profit_owed += sale_profit * owed / sale.total_amount
+    return {
+        'sales': float(sales_total),
+        'collected': float(paid),
+        'still_owed': float(sales_total - paid),
+        'profit': float(profit),
+        'profit_collected': float(profit - profit_owed),
+        'profit_in_debts': float(profit_owed),
+    }
+
+
 def _active_purchases():
     # Cancelled purchases were never delivered, so they don't count as spend
     return Purchase.objects.exclude(status='cancelled')
@@ -201,6 +230,10 @@ def dashboard_summary(request):
         'expenses_month_count': month_expenses['count'],
         'net_profit_today': today_sales['profit'] - today_expenses['total'] - today_returns['profit_lost'],
         'net_profit_month': month_sales['profit'] - month_expenses['total'] - month_returns['profit_lost'],
+        'collection_today': _collection_split(
+            _filter_by_local_date(Sale.objects.all(), today, today)),
+        'collection_month': _collection_split(
+            _filter_by_local_date(Sale.objects.all(), month_start, today)),
         'debt_payments_today': aggregate_debt_payments(today, today),
         'debt_payments_month': aggregate_debt_payments(month_start, today),
         'returns_today': today_returns,
@@ -278,6 +311,7 @@ def reports_overview(request):
 
     total_sales_f = float(total_sales)
     total_purchases_f = float(total_purchases)
+    collection = _collection_split(sales_qs)
     revenue_f = float(revenue_dec)
     cost_f = float(cost_dec)
     gross_profit_f = float(gross_profit_dec)
@@ -434,6 +468,13 @@ def reports_overview(request):
         'kpis': {
             'total_sales': total_sales_f,
             'debt_payments_received': float(debt_payments_total),
+            'sales_collected': collection['collected'],
+            'sales_still_owed': collection['still_owed'],
+            'profit_collected': collection['profit_collected'],
+            'profit_in_debts': collection['profit_in_debts'],
+            # Net profit counting only profit that has actually been paid
+            'net_profit_received': collection['profit_collected']
+                - total_expenses_f - float(returns_profit_lost_dec),
             'debt_payments_count': debt_payments_qs.count(),
             'total_purchases': total_purchases_f,
             'total_profit': gross_profit_f,

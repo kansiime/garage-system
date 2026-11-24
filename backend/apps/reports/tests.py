@@ -92,6 +92,31 @@ class DashboardTests(APITestCase):
         self.assertEqual(daily[3], {'date': str(today), 'sales': 100, 'debt_payments': 75,
                                     'debt_payments_count': 1, 'total': 175})
 
+    def test_profit_is_split_into_collected_and_still_in_debts(self):
+        # Two sales, each 100 profit: one paid in full, one on credit,
+        # then the customer pays half of the credit sale.
+        self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'amount_paid': 250,
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 250}],
+        }, format='json')
+        credit = self.client.post('/api/sales/', {
+            'reference': 'SL-2', 'customer_name': 'Ann', 'amount_paid': 0,
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 160}],
+        }, format='json').data
+        self.client.post(f'/api/debts/{credit["debt_id"]}/record_payment/',
+                         {'amount': 80}, format='json')
+
+        month = self.client.get('/api/reports/dashboard/').data['collection_month']
+        self.assertEqual(month['sales'], 410)
+        self.assertEqual(month['collected'], 330)
+        self.assertEqual(month['still_owed'], 80)
+        self.assertEqual(month['profit'], 290)  # 190 + 100
+        self.assertEqual(month['profit_in_debts'], 50)  # half of 100
+        self.assertEqual(month['profit_collected'], 240)
+        kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
+        self.assertEqual(kpis['profit_in_debts'], 50)
+        self.assertEqual(kpis['net_profit_received'], 240)
+
 
 class ReturnsProfitTests(APITestCase):
     """A sales return only loses the margin (goods go back to stock);
