@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import api, { downloadFile } from '@/lib/api';
 import { formatMoney } from '@/lib/format';
+import PeriodPicker, { DEFAULT_PERIOD, periodQuery, periodRange } from '@/components/PeriodPicker';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -14,31 +15,28 @@ const DEBTS_COLOR = '#d97706';
 const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#ec4899'];
 
 export default function ReportsPage() {
-  const [period, setPeriod] = useState('month');
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
+  const [period, setPeriod] = useState({ ...DEFAULT_PERIOD, key: 'month' });
+  const range = periodRange(period);
+  const rangeKey = range ? `${range.start}|${range.end}` : '';
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [downloadError, setDownloadError] = useState('');
 
   // Build query string for downloads using `output=` (not `format=`)
   const buildQuery = (fmt) => {
-    const p = new URLSearchParams({ period, output: fmt });
-    if (period === 'custom') { p.set('start', start); p.set('end', end); }
-    return p.toString();
+    return `${periodQuery(period)}&output=${fmt}`;
   };
 
   const load = () => {
+    if (!range) return; // custom dates not filled in yet
     setLoading(true);
-    const q = new URLSearchParams({ period });
-    if (period === 'custom') { q.set('start', start); q.set('end', end); }
-    api.get(`/reports/overview/?${q.toString()}`)
+    api.get(`/reports/overview/?${periodQuery(period)}`)
       .then((r) => setData(r.data))
       .catch(() => setDownloadError('Could not load report data.'))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [period, start, end]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [rangeKey]);
 
   const download = async (key, fmt) => {
     setDownloadError('');
@@ -74,27 +72,8 @@ export default function ReportsPage() {
       )}
 
       {/* Period picker */}
-      <div className="card mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div>
-            <label>Period</label>
-            <select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              <option value="today">Today</option>
-              <option value="week">Last 7 Days</option>
-              <option value="month">This Month</option>
-              <option value="year">This Year</option>
-              <option value="custom">Custom</option>
-            </select>
-          </div>
-          {period === 'custom' && (
-            <>
-              <div><label>Start</label>
-                <input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></div>
-              <div><label>End</label>
-                <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></div>
-            </>
-          )}
-        </div>
+      <div className="mb-6">
+        <PeriodPicker value={period} onChange={setPeriod} />
       </div>
 
       {loading && <p className="text-slate-500 text-sm mb-4">Loading report…</p>}

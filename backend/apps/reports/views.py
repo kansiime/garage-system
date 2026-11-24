@@ -41,6 +41,9 @@ def _range_from_params(request):
     elif period == 'month':
         start = today.replace(day=1)
         end = today
+    elif period == 'last_month':
+        end = today.replace(day=1) - timedelta(days=1)
+        start = end.replace(day=1)
     elif period == 'year':
         start = today.replace(month=1, day=1)
         end = today
@@ -161,6 +164,34 @@ def _daily_money_in(start, end):
     ]
 
 
+def _period_trend(start, end):
+    """Sales, profit and debts paid per day, or per month when the range is
+    longer than about two months (so a year is 12 bars, not 365)."""
+    tz = timezone.get_current_timezone()
+    monthly = (end - start).days > 62
+    key = (lambda d: d.replace(day=1)) if monthly else (lambda d: d)
+    buckets = {}
+    d = start
+    while d <= end:
+        buckets.setdefault(key(d), {'total': Decimal('0'), 'profit': Decimal('0'),
+                                    'debt_payments': Decimal('0')})
+        d += timedelta(days=1)
+    items = SaleItem.objects.filter(
+        sale__in=_filter_by_local_date(Sale.objects.all(), start, end)).select_related('sale')
+    for i in items:
+        b = buckets[key(timezone.localtime(i.sale.created_at, tz).date())]
+        b['total'] += i.quantity * i.unit_price
+        b['profit'] += i.quantity * (i.unit_price - i.cost_price)
+    for pay in _debt_payments_received(start, end).only('created_at', 'amount'):
+        buckets[key(timezone.localtime(pay.created_at, tz).date())]['debt_payments'] += pay.amount
+    return {
+        'unit': 'month' if monthly else 'day',
+        'points': [{'date': k.strftime('%Y-%m-%d'), 'total': float(v['total']),
+                    'profit': float(v['profit']), 'debt_payments': float(v['debt_payments'])}
+                   for k, v in buckets.items()],
+    }
+
+
 def _active_purchases():
     # Cancelled purchases were never delivered, so they don't count as spend
     return Purchase.objects.exclude(status='cancelled')
@@ -245,7 +276,26 @@ def dashboard_summary(request):
     today_returns = aggregate_returns(today, today)
     month_returns = aggregate_returns(month_start, today)
 
+    # The period picked on the dashboard (default today): every figure for it
+    sel_start, sel_end = _range_from_params(request)
+    sel_sales = aggregate_sales(sel_start, sel_end)
+    sel_expenses = aggregate_expenses(sel_start, sel_end)
+    sel_returns = aggregate_returns(sel_start, sel_end)
+    selected = {
+        'start': str(sel_start), 'end': str(sel_end),
+        'sales': sel_sales,
+        'debt_payments': aggregate_debt_payments(sel_start, sel_end),
+        'expenses': sel_expenses['total'],
+        'returns_profit_lost': sel_returns['profit_lost'],
+        'net_profit': sel_sales['profit'] - sel_expenses['total'] - sel_returns['profit_lost'],
+        'purchases': float(_filter_purchases_by_date(_active_purchases(), sel_start, sel_end)
+                           .aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
+        'collection': _collection_split(_filter_by_local_date(Sale.objects.all(), sel_start, sel_end)),
+        'trend': _period_trend(sel_start, sel_end),
+    }
+
     return Response({
+        'selected': selected,
         'today': today_sales,
         'month': month_sales,
         'expenses_today': today_expenses['total'],

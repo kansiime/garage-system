@@ -5,6 +5,7 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.inventory.models import Product, Supplier
+from apps.sales.models import Sale
 
 
 class DashboardTests(APITestCase):
@@ -143,6 +144,39 @@ class DashboardTests(APITestCase):
                 res = self.client.get(f'/api/reports/{key}/?period=month&output={fmt}')
                 self.assertEqual(res.status_code, 200, (key, fmt))
                 self.assertGreater(len(res.content), 500)
+
+    def test_dashboard_figures_follow_the_chosen_period(self):
+        from datetime import timedelta
+        from apps.debts.models import Debt, DebtPayment
+        today = timezone.localdate()
+        credit = self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'customer_name': 'Ann', 'amount_paid': 0,
+            'items': [{'product': self.oil.id, 'quantity': 2, 'unit_price': 100}],
+        }, format='json').data
+        old = Sale.objects.get(reference='SL-1')
+        Sale.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=40))
+        self.client.post(f'/api/debts/{credit["debt_id"]}/record_payment/', {'amount': 50}, format='json')
+
+        sel = self.client.get('/api/reports/dashboard/').data['selected']  # default: today
+        self.assertEqual(sel['start'], str(today))
+        self.assertEqual(sel['sales']['total'], 0)
+        self.assertEqual(sel['debt_payments']['total'], 50)
+
+        start = today - timedelta(days=45)
+        sel = self.client.get(
+            f'/api/reports/dashboard/?period=custom&start={start}&end={today}').data['selected']
+        self.assertEqual(sel['sales']['total'], 200)
+        self.assertEqual(sel['sales']['profit'], 80)
+        self.assertEqual(sel['collection']['profit_in_debts'], 60)  # 150 of 200 unpaid
+        self.assertEqual(sel['trend']['unit'], 'day')
+        self.assertEqual(len(sel['trend']['points']), 46)
+        self.assertEqual(sum(p['total'] for p in sel['trend']['points']), 200)
+
+        year = self.client.get('/api/reports/dashboard/?period=year').data['selected']['trend']
+        self.assertEqual(year['unit'], 'month' if (today - today.replace(month=1, day=1)).days > 62 else 'day')
+
+        last = self.client.get('/api/reports/dashboard/?period=last_month').data['selected']
+        self.assertTrue(last['end'] < str(today.replace(day=1)))
 
 
 class ReturnsProfitTests(APITestCase):
