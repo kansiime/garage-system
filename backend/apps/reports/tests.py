@@ -30,7 +30,7 @@ class DashboardTests(APITestCase):
         cancelled = self.buy('PO-2', 500)
         self.client.patch(f'/api/purchases/{cancelled["id"]}/', {'status': 'cancelled'}, format='json')
         data = self.client.get('/api/reports/dashboard/').data
-        self.assertEqual(data['purchases_today'], 300)
+        self.assertEqual(data['selected']['purchases'], 300)
         self.assertEqual(data['payables'], 300)
         overview = self.client.get('/api/reports/overview/?period=today').data
         self.assertEqual(overview['kpis']['total_purchases'], 300)
@@ -40,7 +40,7 @@ class DashboardTests(APITestCase):
             'reference': 'SL-1', 'amount_paid': 200,
             'items': [{'product': self.oil.id, 'quantity': 2, 'unit_price': 100}],
         }, format='json')
-        trend = self.client.get('/api/reports/dashboard/').data['trend']
+        trend = self.client.get('/api/reports/dashboard/?period=week').data['selected']['trend']['points']
         self.assertEqual(len(trend), 7)
         self.assertEqual(trend[-1]['total'], 200)
         self.assertEqual(trend[-1]['profit'], 80)
@@ -62,10 +62,12 @@ class DashboardTests(APITestCase):
         self.client.post(f'/api/debts/{payable.id}/record_payment/', {'amount': 100}, format='json')
 
         data = self.client.get('/api/reports/dashboard/').data
-        self.assertEqual(data['today']['total'], 300)
-        self.assertEqual(data['debt_payments_today'], {'total': 120, 'count': 1})
-        self.assertEqual(data['debt_payments_month']['total'], 120)
-        self.assertEqual(data['trend'][-1]['debt_payments'], 120)
+        sel = data['selected']
+        self.assertEqual(sel['sales']['total'], 300)
+        self.assertEqual(sel['debt_payments'], {'total': 120, 'count': 1})
+        month = self.client.get('/api/reports/dashboard/?period=month').data['selected']
+        self.assertEqual(month['debt_payments']['total'], 120)
+        self.assertEqual(sel['trend']['points'][-1]['debt_payments'], 120)
         kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
         self.assertEqual(kpis['debt_payments_received'], 120)
         self.assertEqual(kpis['debt_payments_count'], 1)
@@ -108,7 +110,7 @@ class DashboardTests(APITestCase):
         self.client.post(f'/api/debts/{credit["debt_id"]}/record_payment/',
                          {'amount': 80}, format='json')
 
-        month = self.client.get('/api/reports/dashboard/').data['collection_month']
+        month = self.client.get('/api/reports/dashboard/?period=month').data['selected']['collection']
         self.assertEqual(month['sales'], 410)
         self.assertEqual(month['collected'], 330)
         self.assertEqual(month['still_owed'], 80)
@@ -178,6 +180,43 @@ class DashboardTests(APITestCase):
         last = self.client.get('/api/reports/dashboard/?period=last_month').data['selected']
         self.assertTrue(last['end'] < str(today.replace(day=1)))
 
+    def test_report_queries_dont_grow_with_the_number_of_sales(self):
+        """Each extra database round trip costs real time on the hosted
+        database, so these pages must not query once per sale or item."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        other = Product.objects.create(name='Filter', sku='FLT', cost_price=5,
+                                       selling_price=20, quantity=500)
+        urls = ['/api/reports/overview/?period=month', '/api/reports/dashboard/?period=month',
+                '/api/reports/profit/?period=month&output=json',
+                '/api/reports/product-movement/?period=month',
+                '/api/reports/expenses/?period=month&output=json',
+                '/api/reports/purchases/?period=month&output=json',
+                '/api/reports/stock/?output=json']
+
+        def counts():
+            out = {}
+            for url in urls:
+                with CaptureQueriesContext(connection) as q:
+                    self.assertEqual(self.client.get(url).status_code, 200, url)
+                out[url] = len(q.captured_queries)
+            return out
+
+        def sell(n):
+            res = self.client.post('/api/sales/', {
+                'reference': f'QC-{n}', 'customer_name': f'Cust {n}', 'amount_paid': 10,
+                'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 100},
+                          {'product': other.id, 'quantity': 1, 'unit_price': 20}],
+            }, format='json')
+            self.assertEqual(res.status_code, 201, res.data)
+
+        sell(0)
+        counts()  # warm up: the first call loads settings that are then cached
+        few = counts()
+        for n in range(1, 9):
+            sell(n)
+        self.assertEqual(counts(), few)
+
 
 class ReturnsProfitTests(APITestCase):
     """A sales return only loses the margin (goods go back to stock);
@@ -208,9 +247,9 @@ class ReturnsProfitTests(APITestCase):
         r = self.ret(reference='RT-1', return_type='sales', original_reference='SL-1')
         self.assertEqual(Decimal(r['items'][0]['cost_price']), 60)
 
-        dash = self.client.get('/api/reports/dashboard/').data
-        self.assertEqual(dash['returns_month']['profit_lost'], 40)
-        self.assertEqual(dash['net_profit_month'], 80 - 40)
+        dash = self.client.get('/api/reports/dashboard/?period=month').data['selected']
+        self.assertEqual(dash['returns_profit_lost'], 40)
+        self.assertEqual(dash['net_profit'], 80 - 40)
         kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
         self.assertEqual(kpis['total_returns'], 100)
         self.assertEqual(kpis['returns_profit_lost'], 40)
@@ -230,4 +269,5 @@ class ReturnsProfitTests(APITestCase):
         kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
         self.assertEqual(kpis['returns_profit_lost'], 0)
         self.assertEqual(kpis['net_profit'], 0)
-        self.assertEqual(self.client.get('/api/reports/dashboard/').data['net_profit_month'], 0)
+        self.assertEqual(self.client.get('/api/reports/dashboard/?period=month')
+                         .data['selected']['net_profit'], 0)

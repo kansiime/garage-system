@@ -1,7 +1,7 @@
 from decimal import Decimal
 from datetime import timedelta, datetime
 
-from django.db.models import Count, DecimalField, F, Sum
+from django.db.models import Count, DecimalField, F, Max, Sum
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
 from django.utils import timezone
@@ -203,131 +203,57 @@ def _active_purchases():
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def dashboard_summary(request):
-    today = _local_today()
-    month_start = today.replace(day=1)
+    """Figures for the period picked on the dashboard (default today), plus
+    balances as they stand now. Totals are summed in the database so the
+    number of queries doesn't grow with the number of sales."""
+    start, end = _range_from_params(request)
+    sales = _filter_by_local_date(Sale.objects.all(), start, end)
+    totals = sales.aggregate(total=Sum('total_amount'), count=Count('id'))
+    sales_total = totals['total'] or Decimal('0')
+    profit = SaleItem.objects.filter(sale__in=sales).aggregate(t=Sum(
+        F('quantity') * (F('unit_price') - F('cost_price')),
+        output_field=DecimalField(max_digits=14, decimal_places=2),
+    ))['t'] or Decimal('0')
+    expenses = _filter_expenses_by_date(Expense.objects.all(), start, end) \
+        .aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    returns_lost = _returns_profit_lost(_filter_by_local_date(Return.objects.all(), start, end))
+    debt_paid = _debt_payments_received(start, end).aggregate(t=Sum('amount'), n=Count('id'))
+    purchases = _filter_purchases_by_date(_active_purchases(), start, end) \
+        .aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
 
-    def aggregate_sales(start, end):
-        sales = _filter_by_local_date(Sale.objects.all(), start, end)
-        total = sales.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
-        items = SaleItem.objects.filter(sale__in=sales)
-        profit = sum(
-            (i.quantity * (i.unit_price - i.cost_price) for i in items),
-            Decimal('0'),
-        )
-        return {'total': float(total), 'profit': float(profit), 'count': sales.count()}
-
-    def aggregate_expenses(start, end):
-        qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
-        total = qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
-        return {'total': float(total), 'count': qs.count()}
-
-    def aggregate_returns(start, end):
-        qs = _filter_by_local_date(Return.objects.all(), start, end)
-        total = qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
-        return {
-            'total': float(total),
-            'profit_lost': float(_returns_profit_lost(qs)),
-            'count': qs.count(),
-            'sales': qs.filter(return_type='sales').count(),
-            'purchase': qs.filter(return_type='purchase').count(),
-        }
-
-    def aggregate_debt_payments(start, end):
-        qs = _debt_payments_received(start, end)
-        total = qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
-        return {'total': float(total), 'count': qs.count()}
-
-    purchases_today = _filter_purchases_by_date(_active_purchases(), today, today)
-    purchases_month = _filter_purchases_by_date(_active_purchases(), month_start, today)
-
-    # Last 7 days, including days with no sales, for the dashboard chart
-    week_start = today - timedelta(days=6)
-    days = {week_start + timedelta(days=n): {'total': Decimal('0'), 'profit': Decimal('0'),
-                                             'debt_payments': Decimal('0')}
-            for n in range(7)}
-    tz = timezone.get_current_timezone()
-    week_items = SaleItem.objects.filter(
-        sale__in=_filter_by_local_date(Sale.objects.all(), week_start, today)
-    ).select_related('sale')
-    for i in week_items:
-        day = days[timezone.localtime(i.sale.created_at, tz).date()]
-        day['total'] += i.quantity * i.unit_price
-        day['profit'] += i.quantity * (i.unit_price - i.cost_price)
-    for p in _debt_payments_received(week_start, today):
-        days[timezone.localtime(p.created_at, tz).date()]['debt_payments'] += p.amount
-    trend = [{'date': d.strftime('%Y-%m-%d'), 'total': float(v['total']),
-              'profit': float(v['profit']), 'debt_payments': float(v['debt_payments'])}
-             for d, v in days.items()]
-
-    receivables = Debt.objects.filter(debt_type='receivable').exclude(status='paid')
-    payables = Debt.objects.filter(debt_type='payable').exclude(status='paid')
-
-    low_qs = Product.objects.filter(quantity__lte=F('reorder_level'))
-    low_stock_items = list(
-        low_qs.values('id', 'name', 'sku', 'quantity', 'reorder_level')[:10]
-    )
-
-    shop = GarageSettings.load()
-
-    today_sales = aggregate_sales(today, today)
-    month_sales = aggregate_sales(month_start, today)
-    today_expenses = aggregate_expenses(today, today)
-    month_expenses = aggregate_expenses(month_start, today)
-    today_returns = aggregate_returns(today, today)
-    month_returns = aggregate_returns(month_start, today)
-
-    # The period picked on the dashboard (default today): every figure for it
-    sel_start, sel_end = _range_from_params(request)
-    sel_sales = aggregate_sales(sel_start, sel_end)
-    sel_expenses = aggregate_expenses(sel_start, sel_end)
-    sel_returns = aggregate_returns(sel_start, sel_end)
     selected = {
-        'start': str(sel_start), 'end': str(sel_end),
-        'sales': sel_sales,
-        'debt_payments': aggregate_debt_payments(sel_start, sel_end),
-        'expenses': sel_expenses['total'],
-        'returns_profit_lost': sel_returns['profit_lost'],
-        'net_profit': sel_sales['profit'] - sel_expenses['total'] - sel_returns['profit_lost'],
-        'purchases': float(_filter_purchases_by_date(_active_purchases(), sel_start, sel_end)
-                           .aggregate(t=Sum('total_amount'))['t'] or Decimal('0')),
-        'collection': _collection_split(_filter_by_local_date(Sale.objects.all(), sel_start, sel_end)),
-        'trend': _period_trend(sel_start, sel_end),
+        'start': str(start), 'end': str(end),
+        'sales': {'total': float(sales_total), 'profit': float(profit), 'count': totals['count']},
+        'debt_payments': {'total': float(debt_paid['t'] or Decimal('0')), 'count': debt_paid['n']},
+        'expenses': float(expenses),
+        'returns_profit_lost': float(returns_lost),
+        'net_profit': float(profit - expenses - returns_lost),
+        'purchases': float(purchases),
+        'collection': _collection_split(sales),
+        'trend': _period_trend(start, end),
     }
+
+    open_balance = Sum(F('amount') - F('amount_paid'))
+    receivables = Debt.objects.filter(debt_type='receivable').exclude(status='paid') \
+        .aggregate(t=open_balance, n=Count('id'))
+    payables = Debt.objects.filter(debt_type='payable').exclude(status='paid') \
+        .aggregate(t=open_balance, n=Count('id'))
+    stock_value = Product.objects.aggregate(t=Sum(
+        F('quantity') * F('cost_price'),
+        output_field=DecimalField(max_digits=16, decimal_places=2),
+    ))['t'] or Decimal('0')
+    low_qs = Product.objects.filter(quantity__lte=F('reorder_level'))
+    shop = GarageSettings.load()
 
     return Response({
         'selected': selected,
-        'today': today_sales,
-        'month': month_sales,
-        'expenses_today': today_expenses['total'],
-        'expenses_today_count': today_expenses['count'],
-        'expenses_month': month_expenses['total'],
-        'expenses_month_count': month_expenses['count'],
-        'net_profit_today': today_sales['profit'] - today_expenses['total'] - today_returns['profit_lost'],
-        'net_profit_month': month_sales['profit'] - month_expenses['total'] - month_returns['profit_lost'],
-        'collection_today': _collection_split(
-            _filter_by_local_date(Sale.objects.all(), today, today)),
-        'collection_month': _collection_split(
-            _filter_by_local_date(Sale.objects.all(), month_start, today)),
-        'debt_payments_today': aggregate_debt_payments(today, today),
-        'debt_payments_month': aggregate_debt_payments(month_start, today),
-        'returns_today': today_returns,
-        'returns_month': month_returns,
-        'purchases_today': float(
-            purchases_today.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
-        ),
-        'purchases_month': float(
-            purchases_month.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
-        ),
-        'receivables': float(sum((d.balance for d in receivables), Decimal('0'))),
-        'payables': float(sum((d.balance for d in payables), Decimal('0'))),
-        'stock_value': float(
-            sum((p.stock_value for p in Product.objects.all()), Decimal('0'))
-        ),
+        'receivables': float(receivables['t'] or Decimal('0')),
+        'receivables_count': receivables['n'],
+        'payables': float(payables['t'] or Decimal('0')),
+        'payables_count': payables['n'],
+        'stock_value': float(stock_value),
         'low_stock': low_qs.count(),
-        'low_stock_items': low_stock_items,
-        'trend': trend,
-        'receivables_count': receivables.count(),
-        'payables_count': payables.count(),
+        'low_stock_items': list(low_qs.values('id', 'name', 'sku', 'quantity', 'reorder_level')[:10]),
         'currency': shop.currency_symbol or shop.currency_code or 'UGX',
         'business_name': shop.name,
     })
@@ -344,7 +270,8 @@ def reports_overview(request):
     currency = shop.currency_symbol or shop.currency_code or 'UGX'
 
     sales_qs = _filter_by_local_date(Sale.objects.all(), start, end)
-    items_qs = SaleItem.objects.filter(sale__in=sales_qs)
+    # Fetched once with their product; reused below instead of re-querying
+    items_qs = list(SaleItem.objects.filter(sale__in=sales_qs).select_related('product'))
     purchases_qs = _filter_purchases_by_date(_active_purchases(), start, end)
     debts_qs = _filter_by_local_date(Debt.objects.all(), start, end)
     expenses_qs = _filter_expenses_by_date(Expense.objects.all(), start, end)
@@ -473,7 +400,7 @@ def reports_overview(request):
     ]
 
     expenses_by_category_map = {}
-    for e in expenses_qs:
+    for e in expenses_qs.select_related('category'):
         cat = e.category.name if e.category else 'Uncategorised'
         if cat not in expenses_by_category_map:
             expenses_by_category_map[cat] = {'category': cat, 'total': Decimal('0'), 'count': 0}
@@ -498,7 +425,7 @@ def reports_overview(request):
     ]
 
     returns_by_product_map = {}
-    for r in returns_qs:
+    for r in returns_qs.prefetch_related('items__product'):
         for item in r.items.all():
             name = item.product.name
             if name not in returns_by_product_map:
@@ -614,7 +541,7 @@ def sales_report(request):
 def purchases_report(request):
     start, end = _range_from_params(request)
     purchases = (_filter_purchases_by_date(Purchase.objects.all(), start, end)
-                 .order_by('-purchase_date', '-created_at'))
+                 .select_related('supplier').order_by('-purchase_date', '-created_at'))
     headers = ['Reference', 'Date', 'Supplier', 'Status', 'Total', 'Paid', 'Balance']
     rows = [[p.reference,
              p.purchase_date.strftime('%Y-%m-%d'),
@@ -633,13 +560,13 @@ def purchases_report(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def stock_report(request):
-    products = Product.objects.all().order_by('name')
+    products = list(Product.objects.select_related('category').order_by('name'))
     headers = ['SKU', 'Name', 'Category', 'Qty', 'Cost Price', 'Selling Price', 'Stock Value']
     rows = [[p.sku, p.name, p.category.name if p.category else '-',
              p.quantity, float(p.cost_price), float(p.selling_price),
              float(p.stock_value)] for p in products]
     summary = {**_shop_meta(),
-               'Total Products': products.count(),
+               'Total Products': len(products),
                'Total Stock Value': float(sum((p.stock_value for p in products), Decimal('0')))}
     return _respond(request, "Stock Report", headers, rows, summary)
 
@@ -665,7 +592,7 @@ def debts_report(request):
 def profit_report(request):
     start, end = _range_from_params(request)
     sales = _filter_by_local_date(Sale.objects.all(), start, end)
-    items = SaleItem.objects.filter(sale__in=sales)
+    items = list(SaleItem.objects.filter(sale__in=sales).select_related('product'))
     expenses = _filter_expenses_by_date(Expense.objects.all(), start, end)
     returns = _filter_by_local_date(Return.objects.all(), start, end)
 
@@ -735,7 +662,8 @@ def money_in_report(request):
 @permission_classes([IsAuthenticated])
 def expenses_report(request):
     start, end = _range_from_params(request)
-    expenses = _filter_expenses_by_date(Expense.objects.all(), start, end).order_by('-expense_date')
+    expenses = _filter_expenses_by_date(Expense.objects.all(), start, end) \
+        .select_related('category').order_by('-expense_date')
     headers = ['Date', 'Description', 'Category', 'Method', 'Reference', 'Amount']
     rows = [[e.expense_date.strftime('%Y-%m-%d'), e.description,
              e.category.name if e.category else '-',
@@ -784,7 +712,7 @@ def product_movement(request):
 
     # All sales in the period
     sales_qs = _filter_by_local_date(Sale.objects.all(), start, end)
-    items = SaleItem.objects.filter(sale__in=sales_qs).select_related('product')
+    items = SaleItem.objects.filter(sale__in=sales_qs).select_related('product', 'sale')
 
     # Aggregate per product: quantity sold, revenue, cost, last sold date
     product_stats = {}   # product_id -> dict
@@ -807,15 +735,15 @@ def product_movement(request):
             product_stats[pid]['last_sold'] = item.sale.created_at
 
     # All products (including those with no sales this period = dead stock)
-    all_products = list(Product.objects.all())
+    all_products = list(Product.objects.select_related('category'))
     product_ids_with_sales = set(product_stats.keys())
 
     # Compute "days since last sold" globally — for dead stock, use the product's
     # last ever sale (or its creation date if never sold)
-    last_ever_sold = {}
-    for item in SaleItem.objects.select_related('sale').order_by('-sale__created_at'):
-        if item.product_id not in last_ever_sold:
-            last_ever_sold[item.product_id] = item.sale.created_at
+    last_ever_sold = {
+        row['product_id']: row['last']
+        for row in SaleItem.objects.values('product_id').annotate(last=Max('sale__created_at'))
+    }
 
     today = _local_today()
 
@@ -862,21 +790,19 @@ def product_movement(request):
     # Fast movers — sort by qty desc, top 10
     fast_movers = sorted(
         [m for m in movers if m['qty_sold'] > 0],
-        key=lambda m: m['qty_sold'],
-        reverse=True,
+        key=lambda m: (-m['qty_sold'], m['name']),  # ties in name order
     )[:10]
 
     # Slow movers — sort by qty asc (but with at least 1 sale)
     slow_movers = sorted(
         [m for m in movers if m['qty_sold'] > 0],
-        key=lambda m: m['qty_sold'],
+        key=lambda m: (m['qty_sold'], m['name']),
     )[:10]
 
     # Dead stock — zero sales in period
     dead_stock = sorted(
         [m for m in movers if m['qty_sold'] == 0],
-        key=lambda m: m['stock_value'],
-        reverse=True,
+        key=lambda m: (-m['stock_value'], m['name']),
     )[:20]
 
     # Summary KPIs
