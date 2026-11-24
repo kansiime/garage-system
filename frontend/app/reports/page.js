@@ -8,6 +8,9 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from 'recharts';
 
+// Same validated pair as the dashboard: blue = sales, amber = debts paid
+const SALES_COLOR = '#2563eb';
+const DEBTS_COLOR = '#d97706';
 const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#ec4899'];
 
 export default function ReportsPage() {
@@ -101,6 +104,10 @@ export default function ReportsPage() {
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <Kpi label="Total Sales" value={money(data.kpis.total_sales)} />
+            <Kpi label="Debt Payments Received" value={money(data.kpis.debt_payments_received || 0)} accent="amber"
+                 hint={data.kpis.total_sales
+                   ? `${Math.round(((data.kpis.debt_payments_received || 0) / data.kpis.total_sales) * 100)}% of sales · ${data.kpis.debt_payments_count || 0} payments`
+                   : `${data.kpis.debt_payments_count || 0} payments`} />
             <Kpi label="Gross Profit" value={money(data.kpis.gross_profit || data.kpis.total_profit)}
                  accent="green" hint={`${data.kpis.gross_margin}% margin`} />
             <Kpi label="Total Expenses" value={money(data.kpis.total_expenses || 0)} accent="red" />
@@ -109,6 +116,13 @@ export default function ReportsPage() {
             <Kpi label="Net Profit" value={money(data.kpis.net_profit || 0)}
                  accent={(data.kpis.net_profit || 0) >= 0 ? 'green' : 'red'}
                  hint={`${data.kpis.net_margin || 0}% net margin`} />
+            <Kpi label="Profit Received" value={money(data.kpis.profit_collected || 0)} accent="green"
+                 hint={`${money(data.kpis.sales_collected || 0)} of sales paid`} />
+            <Kpi label="Profit Still in Debts" value={money(data.kpis.profit_in_debts || 0)} accent="amber"
+                 hint={`${money(data.kpis.sales_still_owed || 0)} of sales unpaid`} />
+            <Kpi label="Net Profit Received" value={money(data.kpis.net_profit_received || 0)}
+                 accent={(data.kpis.net_profit_received || 0) >= 0 ? 'green' : 'red'}
+                 hint="Only profit actually paid, after expenses & returns" />
             <Kpi label="Purchases" value={money(data.kpis.total_purchases)} accent="amber" />
             <Kpi label="Transactions" value={data.kpis.transaction_count} accent="purple"
                  hint={`Avg ${money(data.kpis.average_sale)}`} />
@@ -166,6 +180,10 @@ export default function ReportsPage() {
                 </ResponsiveContainer>
               </div>
             </div>
+          )}
+
+          {data.daily_money_in?.length > 0 && (
+            <DailyMoneyIn days={data.daily_money_in} money={money} />
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
@@ -354,6 +372,7 @@ export default function ReportsPage() {
             { key: 'stock', label: 'Stock Report' },
             { key: 'debts', label: 'Debts Report' },
             { key: 'profit', label: 'Profit Report' },
+            { key: 'money-in', label: 'Sales vs Debts Paid by Day' },
             { key: 'expenses', label: 'Expenses Report' },
             { key: 'returns', label: 'Returns Report' },
           ].map((r) => (
@@ -368,6 +387,96 @@ export default function ReportsPage() {
         </div>
       </div>
     </ProtectedRoute>
+  );
+}
+
+function DailyMoneyIn({ days, money }) {
+  const totals = days.reduce((t, d) => ({
+    sales: t.sales + d.sales,
+    debts: t.debts + d.debt_payments,
+    count: t.count + d.debt_payments_count,
+  }), { sales: 0, debts: 0, count: 0 });
+  const label = (iso) => new Date(`${iso}T00:00:00`)
+    .toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const chartData = days.map((d) => ({ ...d, label: label(d.date) }));
+  const pct = (d) => (d.sales ? `${Math.round((d.debt_payments / d.sales) * 100)}%` : '—');
+
+  return (
+    <div className="card mb-6">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+        <div>
+          <p className="card-title mb-1">Sales vs debts paid by day</p>
+          <p className="text-sm text-slate-500">
+            <b className="text-slate-900">{money(totals.sales)}</b> sales ·{' '}
+            <b className="text-slate-900">{money(totals.debts)}</b> debts paid
+            {' '}({totals.count} payment{totals.count !== 1 && 's'})
+          </p>
+        </div>
+        <div className="flex items-center gap-4 text-xs text-slate-600">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: SALES_COLOR }} />Sales
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: DEBTS_COLOR }} />Debts paid
+          </span>
+        </div>
+      </div>
+
+      {days.length > 1 && (
+        <div style={{ width: '100%', height: 260 }} className="mb-4">
+          <ResponsiveContainer>
+            <BarChart data={chartData} barGap={2} barCategoryGap="20%">
+              <CartesianGrid vertical={false} stroke="#f1f5f9" />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false}
+                minTickGap={12} />
+              <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} width={60} />
+              <Tooltip formatter={(v) => money(v)} cursor={{ fill: '#f8fafc' }} />
+              <Bar dataKey="sales" name="Sales" fill={SALES_COLOR} radius={[4, 4, 0, 0]} maxBarSize={24}
+                isAnimationActive={false} />
+              <Bar dataKey="debt_payments" name="Debts paid" fill={DEBTS_COLOR} radius={[4, 4, 0, 0]}
+                maxBarSize={24} isAnimationActive={false} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <div className="overflow-auto max-h-96 border border-slate-100 rounded-lg">
+        <table>
+          <thead className="sticky top-0 bg-white">
+            <tr>
+              <th>Date</th>
+              <th className="text-right">Sales</th>
+              <th className="text-right">Debts paid</th>
+              <th className="text-right">Payments</th>
+              <th className="text-right">Debts paid vs sales</th>
+              <th className="text-right">Total money in</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...days].reverse().map((d) => (
+              <tr key={d.date} className={!d.sales && !d.debt_payments ? 'text-slate-400' : ''}>
+                <td className="whitespace-nowrap">{label(d.date)}</td>
+                <td className="text-right tabular-nums">{money(d.sales)}</td>
+                <td className="text-right tabular-nums">{money(d.debt_payments)}</td>
+                <td className="text-right tabular-nums">{d.debt_payments_count}</td>
+                <td className="text-right tabular-nums">{pct(d)}</td>
+                <td className="text-right tabular-nums font-semibold">{money(d.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="font-bold border-t border-slate-200">
+              <td>Total</td>
+              <td className="text-right tabular-nums">{money(totals.sales)}</td>
+              <td className="text-right tabular-nums">{money(totals.debts)}</td>
+              <td className="text-right tabular-nums">{totals.count}</td>
+              <td className="text-right tabular-nums">{pct({ sales: totals.sales, debt_payments: totals.debts })}</td>
+              <td className="text-right tabular-nums">{money(totals.sales + totals.debts)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
   );
 }
 

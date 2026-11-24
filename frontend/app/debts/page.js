@@ -8,6 +8,8 @@ import { formatMoney } from '@/lib/format';
 import { usePagination } from '@/lib/usePagination';
 import { useUser, can } from '@/lib/useUser';
 import { useToast } from '@/components/Toast';
+import CreditLimitWarning from '@/components/CreditLimitWarning';
+import { useCreditCheck, creditPosition } from '@/lib/useCreditCheck';
 import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp';
 import { PAYMENT_METHODS } from '@/lib/paymentMethods';
 
@@ -33,7 +35,7 @@ export default function DebtsPage() {
   const [settings, setSettings] = useState({});
   const [form, setForm] = useState({
     debt_type: 'receivable', party_name: '', party_phone: '',
-    amount: '', reference: '', notes: '', promised_date: '',
+    amount: '', reference: '', notes: '', promised_date: '', override_credit_limit: false,
   });
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('unpaid');
@@ -69,6 +71,9 @@ export default function DebtsPage() {
   }, []);
 
   const money = (n) => formatMoney(n, currency);
+  const debtCustomer = useCreditCheck(form.party_name, form.party_phone, form.debt_type === 'receivable');
+  const debtCredit = form.debt_type === 'receivable'
+    ? creditPosition(debtCustomer, parseFloat(form.amount) || 0) : null;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -84,7 +89,7 @@ export default function DebtsPage() {
         ? `${money(form.amount)} added to ${res.data.party_name}'s existing debt — balance now ${money(res.data.balance)}`
         : `Debt recorded for ${res.data.party_name}`);
       setForm({ debt_type: 'receivable', party_name: '', party_phone: '',
-        amount: '', reference: '', notes: '', promised_date: '' });
+        amount: '', reference: '', notes: '', promised_date: '', override_credit_limit: false });
       load();
     } catch (err) {
       const msg = apiError(err, 'Could not save debt.');
@@ -350,7 +355,12 @@ export default function DebtsPage() {
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 placeholder="Any details about this debt…" /></div>
           </div>
-          <div className="mt-4 flex justify-end">
+          <div className="mt-4">
+            <CreditLimitWarning position={debtCredit} money={money} verb="This adds"
+              canOverride override={form.override_credit_limit}
+              onOverride={(v) => setForm({ ...form, override_credit_limit: v })} />
+          </div>
+          <div className="flex justify-end">
             <button className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Add Debt'}</button>
           </div>
         </form>

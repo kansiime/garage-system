@@ -12,7 +12,7 @@ from rest_framework.response import Response
 
 from apps.sales.models import Sale, SaleItem
 from apps.purchases.models import Purchase
-from apps.debts.models import Debt
+from apps.debts.models import Debt, DebtPayment
 from apps.inventory.models import Product
 from apps.expenses.models import Expense
 from apps.returns.models import Return, ReturnItem
@@ -99,6 +99,68 @@ def _returns_profit_lost(returns_qs):
     return lost or Decimal('0')
 
 
+def _debt_payments_received(start, end):
+    """Money customers paid off their debts in the range. Adjustments
+    (e.g. goods returned) move no money, so they are left out."""
+    return _filter_by_local_date(
+        DebtPayment.objects.filter(debt__debt_type='receivable').exclude(method='adjustment'),
+        start, end,
+    )
+
+
+def _collection_split(sales_qs):
+    """How much of the sales (and their profit) has actually been paid.
+
+    A sale's amount_paid grows as debt payments are allocated to it, so its
+    balance is what is still owed today. Profit is split in the same ratio:
+    a sale half paid for has half its profit collected, half still in debts.
+    """
+    sales_total = paid = profit = profit_owed = Decimal('0')
+    for sale in sales_qs.prefetch_related('items'):
+        sale_profit = sum(
+            (i.quantity * (i.unit_price - i.cost_price) for i in sale.items.all()),
+            Decimal('0'),
+        )
+        sales_total += sale.total_amount
+        paid += min(sale.amount_paid, sale.total_amount)
+        profit += sale_profit
+        owed = max(sale.total_amount - sale.amount_paid, Decimal('0'))
+        if sale.total_amount > 0 and owed > 0:
+            profit_owed += sale_profit * owed / sale.total_amount
+    profit_owed = profit_owed.quantize(Decimal('0.01'))
+    return {
+        'sales': float(sales_total),
+        'collected': float(paid),
+        'still_owed': float(sales_total - paid),
+        'profit': float(profit),
+        'profit_collected': float(profit - profit_owed),
+        'profit_in_debts': float(profit_owed),
+    }
+
+
+def _daily_money_in(start, end):
+    """Sales and debt payments received for every day in the range
+    (days with nothing are included, so gaps show)."""
+    tz = timezone.get_current_timezone()
+    daily = {start + timedelta(days=n): {'sales': Decimal('0'), 'debt_payments': Decimal('0'),
+                                         'debt_payments_count': 0}
+             for n in range((end - start).days + 1)}
+    sales = _filter_by_local_date(Sale.objects.all(), start, end)
+    for sale in sales.only('created_at', 'total_amount'):
+        daily[timezone.localtime(sale.created_at, tz).date()]['sales'] += sale.total_amount
+    for pay in _debt_payments_received(start, end).only('created_at', 'amount'):
+        day = daily[timezone.localtime(pay.created_at, tz).date()]
+        day['debt_payments'] += pay.amount
+        day['debt_payments_count'] += 1
+    return [
+        {'date': d.strftime('%Y-%m-%d'), 'sales': float(v['sales']),
+         'debt_payments': float(v['debt_payments']),
+         'debt_payments_count': v['debt_payments_count'],
+         'total': float(v['sales'] + v['debt_payments'])}
+        for d, v in daily.items()
+    ]
+
+
 def _active_purchases():
     # Cancelled purchases were never delivered, so they don't count as spend
     return Purchase.objects.exclude(status='cancelled')
@@ -139,12 +201,18 @@ def dashboard_summary(request):
             'purchase': qs.filter(return_type='purchase').count(),
         }
 
+    def aggregate_debt_payments(start, end):
+        qs = _debt_payments_received(start, end)
+        total = qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+        return {'total': float(total), 'count': qs.count()}
+
     purchases_today = _filter_purchases_by_date(_active_purchases(), today, today)
     purchases_month = _filter_purchases_by_date(_active_purchases(), month_start, today)
 
     # Last 7 days, including days with no sales, for the dashboard chart
     week_start = today - timedelta(days=6)
-    days = {week_start + timedelta(days=n): {'total': Decimal('0'), 'profit': Decimal('0')}
+    days = {week_start + timedelta(days=n): {'total': Decimal('0'), 'profit': Decimal('0'),
+                                             'debt_payments': Decimal('0')}
             for n in range(7)}
     tz = timezone.get_current_timezone()
     week_items = SaleItem.objects.filter(
@@ -154,8 +222,11 @@ def dashboard_summary(request):
         day = days[timezone.localtime(i.sale.created_at, tz).date()]
         day['total'] += i.quantity * i.unit_price
         day['profit'] += i.quantity * (i.unit_price - i.cost_price)
+    for p in _debt_payments_received(week_start, today):
+        days[timezone.localtime(p.created_at, tz).date()]['debt_payments'] += p.amount
     trend = [{'date': d.strftime('%Y-%m-%d'), 'total': float(v['total']),
-              'profit': float(v['profit'])} for d, v in days.items()]
+              'profit': float(v['profit']), 'debt_payments': float(v['debt_payments'])}
+             for d, v in days.items()]
 
     receivables = Debt.objects.filter(debt_type='receivable').exclude(status='paid')
     payables = Debt.objects.filter(debt_type='payable').exclude(status='paid')
@@ -183,6 +254,12 @@ def dashboard_summary(request):
         'expenses_month_count': month_expenses['count'],
         'net_profit_today': today_sales['profit'] - today_expenses['total'] - today_returns['profit_lost'],
         'net_profit_month': month_sales['profit'] - month_expenses['total'] - month_returns['profit_lost'],
+        'collection_today': _collection_split(
+            _filter_by_local_date(Sale.objects.all(), today, today)),
+        'collection_month': _collection_split(
+            _filter_by_local_date(Sale.objects.all(), month_start, today)),
+        'debt_payments_today': aggregate_debt_payments(today, today),
+        'debt_payments_month': aggregate_debt_payments(month_start, today),
         'returns_today': today_returns,
         'returns_month': month_returns,
         'purchases_today': float(
@@ -224,6 +301,10 @@ def reports_overview(request):
     returns_qs = _filter_by_local_date(Return.objects.all(), start, end)
 
     total_sales = sales_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
+    debt_payments_qs = _debt_payments_received(start, end)
+    debt_payments_total = debt_payments_qs.aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    daily_money_in = _daily_money_in(start, end)
+
     total_purchases = purchases_qs.aggregate(t=Sum('total_amount'))['t'] or Decimal('0')
 
     revenue_dec = sum((i.quantity * i.unit_price for i in items_qs), Decimal('0'))
@@ -237,6 +318,7 @@ def reports_overview(request):
 
     total_sales_f = float(total_sales)
     total_purchases_f = float(total_purchases)
+    collection = _collection_split(sales_qs)
     revenue_f = float(revenue_dec)
     cost_f = float(cost_dec)
     gross_profit_f = float(gross_profit_dec)
@@ -392,6 +474,15 @@ def reports_overview(request):
         'period': {'start': str(start), 'end': str(end)},
         'kpis': {
             'total_sales': total_sales_f,
+            'debt_payments_received': float(debt_payments_total),
+            'sales_collected': collection['collected'],
+            'sales_still_owed': collection['still_owed'],
+            'profit_collected': collection['profit_collected'],
+            'profit_in_debts': collection['profit_in_debts'],
+            # Net profit counting only profit that has actually been paid
+            'net_profit_received': collection['profit_collected']
+                - total_expenses_f - float(returns_profit_lost_dec),
+            'debt_payments_count': debt_payments_qs.count(),
             'total_purchases': total_purchases_f,
             'total_profit': gross_profit_f,
             'gross_profit': gross_profit_f,
@@ -411,6 +502,7 @@ def reports_overview(request):
         },
         'cash_vs_credit': {'cash': cash_stats, 'credit': credit_stats, 'partial': partial_stats},
         'sales_trend': sales_trend,
+        'daily_money_in': daily_money_in,
         'top_products': top_products,
         'top_customers': top_customers,
         'payment_mix': payment_mix,
@@ -458,7 +550,12 @@ def sales_report(request):
              float(s.total_amount), float(s.amount_paid), float(s.balance)]
             for s in sales]
     total = float(sales.aggregate(t=Sum('total_amount'))['t'] or Decimal('0'))
-    summary = {**_shop_meta(), 'Total Sales': total, 'Transactions': sales.count()}
+    collection = _collection_split(sales)
+    debt_paid = _debt_payments_received(start, end).aggregate(t=Sum('amount'))['t'] or Decimal('0')
+    summary = {**_shop_meta(), 'Total Sales': total, 'Transactions': sales.count(),
+               'Sales Paid': collection['collected'],
+               'Sales Still Owed': collection['still_owed'],
+               'Debt Payments Received': float(debt_paid)}
     return _respond(request, f"Sales Report ({start} to {end})", headers, rows, summary)
 
 
@@ -552,7 +649,36 @@ def profit_report(request):
                'Total Returns': float(returns_dec),
                'Profit Lost on Returns': float(returns_lost_dec),
                'Net Profit': float(net_dec)}
+    collection = _collection_split(sales)
+    summary.update({
+        'Profit Received': collection['profit_collected'],
+        'Profit Still in Debts': collection['profit_in_debts'],
+        'Net Profit Received': collection['profit_collected']
+            - float(expenses_dec) - float(returns_lost_dec),
+    })
     return _respond(request, f"Profit Report ({start} to {end})", headers, rows, summary)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def money_in_report(request):
+    start, end = _range_from_params(request)
+    days = _daily_money_in(start, end)
+    headers = ['Date', 'Sales', 'Debts Paid', 'Payments', 'Debts Paid vs Sales', 'Total Money In']
+    pct = lambda debts, sales: f"{round(debts / sales * 100)}%" if sales else '-'
+    rows = [[d['date'], d['sales'], d['debt_payments'], d['debt_payments_count'],
+             pct(d['debt_payments'], d['sales']), d['total']]
+            for d in reversed(days)]
+    sales = sum(d['sales'] for d in days)
+    debts = sum(d['debt_payments'] for d in days)
+    summary = {**_shop_meta(),
+               'Total Sales': sales,
+               'Total Debts Paid': debts,
+               'Debt Payments': sum(d['debt_payments_count'] for d in days),
+               'Debts Paid vs Sales': pct(debts, sales),
+               'Total Money In': sales + debts}
+    return _respond(request, f"Sales vs Debts Paid by Day ({start} to {end})",
+                    headers, rows, summary)
 
 
 @api_view(['GET'])

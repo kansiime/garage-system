@@ -12,6 +12,7 @@ import {
 // Validated pair (blue = sales, teal = profit) — see dataviz palette check
 const SALES = '#2563eb';
 const PROFIT = '#0d9488';
+const DEBTS = '#d97706'; // debt payments received (validated with the pair above)
 
 const greeting = () => {
   const h = new Date().getHours();
@@ -54,6 +55,7 @@ export default function Dashboard() {
   }));
   const weekSales = trend.reduce((s, d) => s + d.total, 0);
   const weekProfit = trend.reduce((s, d) => s + d.profit, 0);
+  const weekDebtPayments = trend.reduce((s, d) => s + (d.debt_payments || 0), 0);
 
   return (
     <ProtectedRoute>
@@ -141,6 +143,42 @@ export default function Dashboard() {
               hint={`${money(data.purchases_month)} bought this month`} />
           </div>
 
+          {/* Sales vs debt payments received */}
+          <div className="card mb-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <p className="card-title mb-0">Sales vs debt payments received</p>
+              {can.recordPayment(user) && (
+                <Link href="/debts" className="text-sm text-blue-600 hover:underline">Debts →</Link>
+              )}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Compare label="Today" money={money}
+                sales={data.today.total} debts={data.debt_payments_today?.total || 0}
+                debtCount={data.debt_payments_today?.count || 0} />
+              <Compare label="Last 7 days" money={money}
+                sales={weekSales} debts={weekDebtPayments} />
+              <Compare label="This month" money={money}
+                sales={data.month.total} debts={data.debt_payments_month?.total || 0}
+                debtCount={data.debt_payments_month?.count || 0} />
+            </div>
+          </div>
+
+          {/* Profit actually received vs profit still sitting in debts */}
+          {data.collection_month && (
+            <div className="card mb-6">
+              <p className="card-title mb-1">Profit in hand vs profit still in debts</p>
+              <p className="text-sm text-slate-500 mb-4">
+                Credit sales count as profit straight away, but you only have that money once the customer pays.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ProfitSplit label="Today" split={data.collection_today} money={money} />
+                <ProfitSplit label="This month" split={data.collection_month} money={money}
+                  netReceived={data.collection_month.profit_collected - data.expenses_month
+                    - (data.returns_month?.profit_lost || 0)} />
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
             {/* 7-day chart */}
             <div className="card lg:col-span-2">
@@ -149,12 +187,14 @@ export default function Dashboard() {
                   <p className="card-title mb-1">Last 7 days</p>
                   <p className="text-sm text-slate-500">
                     <b className="text-slate-900">{money(weekSales)}</b> sales ·{' '}
-                    <b className="text-slate-900">{money(weekProfit)}</b> profit
+                    <b className="text-slate-900">{money(weekProfit)}</b> profit ·{' '}
+                    <b className="text-slate-900">{money(weekDebtPayments)}</b> debts paid
                   </p>
                 </div>
                 <div className="flex items-center gap-4 text-xs text-slate-600">
                   <Legend color={SALES} label="Sales" />
                   <Legend color={PROFIT} label="Profit" />
+                  <Legend color={DEBTS} label="Debts paid" />
                 </div>
               </div>
               <div style={{ width: '100%', height: 300 }}>
@@ -167,6 +207,7 @@ export default function Dashboard() {
                     <Tooltip content={<ChartTooltip money={money} />} cursor={{ fill: '#f8fafc' }} />
                     <Bar dataKey="total" name="Sales" fill={SALES} radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
                     <Bar dataKey="profit" name="Profit" fill={PROFIT} radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
+                    <Bar dataKey="debt_payments" name="Debts paid" fill={DEBTS} radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -259,6 +300,77 @@ function Kpi({ icon, tint, label, value, hint, valueClass = '' }) {
         <p className={`text-xl font-bold text-slate-900 mt-1 tabular-nums truncate ${valueClass}`}>{value}</p>
         {hint && <p className="text-xs text-slate-500 mt-0.5">{hint}</p>}
       </div>
+    </div>
+  );
+}
+
+function ProfitSplit({ label, split, money, netReceived }) {
+  if (!split) return null;
+  const inHandPct = split.profit > 0 ? (split.profit_collected / split.profit) * 100 : 0;
+  const owedPct = split.profit > 0 ? Math.round((split.profit_in_debts / split.profit) * 100) : 0;
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">{label}</p>
+      <Line label="Profit made" value={money(split.profit)} />
+      <div className="flex justify-between py-1 text-sm">
+        <span className="flex items-center gap-1.5 text-slate-700">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: PROFIT }} />Received (in hand)
+        </span>
+        <b className="tabular-nums text-slate-900">{money(split.profit_collected)}</b>
+      </div>
+      <div className="flex justify-between py-1 text-sm">
+        <span className="flex items-center gap-1.5 text-slate-700">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: DEBTS }} />Still in debts
+        </span>
+        <b className="tabular-nums text-slate-900">{money(split.profit_in_debts)}</b>
+      </div>
+      <div className="flex h-2 rounded-full overflow-hidden bg-slate-100 mt-2 gap-0.5"
+        title={`Received ${money(split.profit_collected)} · Still in debts ${money(split.profit_in_debts)}`}>
+        {split.profit_collected > 0 && <div style={{ width: `${inHandPct}%`, background: PROFIT }} />}
+        {split.profit_in_debts > 0 && <div style={{ width: `${100 - inHandPct}%`, background: DEBTS }} />}
+      </div>
+      <p className="text-xs text-slate-500 mt-2">
+        {split.profit > 0 ? `${owedPct}% of the profit is not yet paid` : 'No profit yet'}
+        {split.still_owed > 0 ? ` · ${money(split.still_owed)} of these sales still owed` : ''}
+      </p>
+      {netReceived !== undefined && (
+        <Line label="Net profit received (after expenses & returns)" value={money(netReceived)} strong
+          danger={netReceived < 0} />
+      )}
+    </div>
+  );
+}
+
+function Compare({ label, sales, debts, debtCount, money }) {
+  const total = sales + debts;
+  const salesPct = total ? (sales / total) * 100 : 0;
+  const ratio = sales ? Math.round((debts / sales) * 100) : null;
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">{label}</p>
+      <div className="flex justify-between gap-3 text-sm">
+        <span className="flex items-center gap-1.5 text-slate-600">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: SALES }} />Sales
+        </span>
+        <b className="tabular-nums text-slate-900">{money(sales)}</b>
+      </div>
+      <div className="flex justify-between gap-3 text-sm mt-1">
+        <span className="flex items-center gap-1.5 text-slate-600">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: DEBTS }} />Debts paid
+        </span>
+        <b className="tabular-nums text-slate-900">{money(debts)}</b>
+      </div>
+      <div className="flex h-2 rounded-full overflow-hidden bg-slate-100 mt-3 gap-0.5"
+        title={`Sales ${money(sales)} · Debts paid ${money(debts)}`}>
+        {sales > 0 && <div style={{ width: `${salesPct}%`, background: SALES }} />}
+        {debts > 0 && <div style={{ width: `${100 - salesPct}%`, background: DEBTS }} />}
+      </div>
+      <p className="text-xs text-slate-500 mt-2">
+        {ratio === null
+          ? (debts ? 'No sales yet — all money in came from debts' : 'Nothing yet')
+          : `Debts paid = ${ratio}% of sales`}
+        {debtCount ? ` · ${debtCount} payment${debtCount !== 1 ? 's' : ''}` : ''}
+      </p>
     </div>
   );
 }

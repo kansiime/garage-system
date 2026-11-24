@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
@@ -43,6 +44,105 @@ class DashboardTests(APITestCase):
         self.assertEqual(trend[-1]['total'], 200)
         self.assertEqual(trend[-1]['profit'], 80)
         self.assertEqual(sum(d['total'] for d in trend[:-1]), 0)
+
+    def test_debt_payments_received_are_shown_next_to_sales(self):
+        res = self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'customer_name': 'Ann', 'amount_paid': 0,
+            'items': [{'product': self.oil.id, 'quantity': 3, 'unit_price': 100}],
+        }, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        debt_id = res.data['debt_id']
+        self.client.post(f'/api/debts/{debt_id}/record_payment/', {'amount': 120}, format='json')
+        # An adjustment moves no money and supplier payments aren't money in
+        from apps.debts.models import Debt, DebtPayment
+        DebtPayment.objects.create(debt_id=debt_id, amount=50, method='adjustment')
+        self.buy('PO-1', 400)
+        payable = Debt.objects.get(debt_type='payable')
+        self.client.post(f'/api/debts/{payable.id}/record_payment/', {'amount': 100}, format='json')
+
+        data = self.client.get('/api/reports/dashboard/').data
+        self.assertEqual(data['today']['total'], 300)
+        self.assertEqual(data['debt_payments_today'], {'total': 120, 'count': 1})
+        self.assertEqual(data['debt_payments_month']['total'], 120)
+        self.assertEqual(data['trend'][-1]['debt_payments'], 120)
+        kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
+        self.assertEqual(kpis['debt_payments_received'], 120)
+        self.assertEqual(kpis['debt_payments_count'], 1)
+
+    def test_overview_lists_sales_and_debts_paid_for_each_day(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from apps.debts.models import Debt, DebtPayment
+        today = timezone.localdate()
+        debt = Debt.objects.create(debt_type='receivable', party_name='Ann', amount=500)
+        old = DebtPayment.objects.create(debt=debt, amount=200, method='cash')
+        DebtPayment.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=2))
+        DebtPayment.objects.create(debt=debt, amount=75, method='mobile')
+        self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'amount_paid': 100,
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 100}],
+        }, format='json')
+        start = today - timedelta(days=3)
+        daily = self.client.get(
+            f'/api/reports/overview/?period=custom&start={start}&end={today}'
+        ).data['daily_money_in']
+        self.assertEqual([d['date'] for d in daily],
+                         [str(start + timedelta(days=n)) for n in range(4)])
+        self.assertEqual(daily[1]['debt_payments'], 200)
+        self.assertEqual(daily[1]['sales'], 0)
+        self.assertEqual(daily[3], {'date': str(today), 'sales': 100, 'debt_payments': 75,
+                                    'debt_payments_count': 1, 'total': 175})
+
+    def test_profit_is_split_into_collected_and_still_in_debts(self):
+        # Two sales, each 100 profit: one paid in full, one on credit,
+        # then the customer pays half of the credit sale.
+        self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'amount_paid': 250,
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 250}],
+        }, format='json')
+        credit = self.client.post('/api/sales/', {
+            'reference': 'SL-2', 'customer_name': 'Ann', 'amount_paid': 0,
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': 160}],
+        }, format='json').data
+        self.client.post(f'/api/debts/{credit["debt_id"]}/record_payment/',
+                         {'amount': 80}, format='json')
+
+        month = self.client.get('/api/reports/dashboard/').data['collection_month']
+        self.assertEqual(month['sales'], 410)
+        self.assertEqual(month['collected'], 330)
+        self.assertEqual(month['still_owed'], 80)
+        self.assertEqual(month['profit'], 290)  # 190 + 100
+        self.assertEqual(month['profit_in_debts'], 50)  # half of 100
+        self.assertEqual(month['profit_collected'], 240)
+        kpis = self.client.get('/api/reports/overview/?period=today').data['kpis']
+        self.assertEqual(kpis['profit_in_debts'], 50)
+        self.assertEqual(kpis['net_profit_received'], 240)
+
+    def test_downloads_include_debts_paid_and_profit_received(self):
+        credit = self.client.post('/api/sales/', {
+            'reference': 'SL-1', 'customer_name': 'Ann', 'amount_paid': 0,
+            'items': [{'product': self.oil.id, 'quantity': 3, 'unit_price': 100}],
+        }, format='json').data
+        self.client.post(f'/api/debts/{credit["debt_id"]}/record_payment/',
+                         {'amount': 100}, format='json')
+
+        money_in = self.client.get('/api/reports/money-in/?period=week&output=json').data
+        self.assertEqual(len(money_in['rows']), 7)
+        self.assertEqual(money_in['rows'][0], [str(timezone.localdate()), 300, 100, 1, '33%', 400])
+        self.assertEqual(money_in['summary']['Total Money In'], 400)
+
+        profit = self.client.get('/api/reports/profit/?period=today&output=json').data['summary']
+        self.assertEqual(profit['Profit Received'], 40)       # 1/3 of 120 profit
+        self.assertEqual(profit['Profit Still in Debts'], 80)
+        sales = self.client.get('/api/reports/sales/?period=today&output=json').data['summary']
+        self.assertEqual(sales['Sales Still Owed'], 200)
+        self.assertEqual(sales['Debt Payments Received'], 100)
+
+        for key in ('money-in', 'profit', 'sales'):
+            for fmt in ('pdf', 'excel'):
+                res = self.client.get(f'/api/reports/{key}/?period=month&output={fmt}')
+                self.assertEqual(res.status_code, 200, (key, fmt))
+                self.assertGreater(len(res.content), 500)
 
 
 class ReturnsProfitTests(APITestCase):

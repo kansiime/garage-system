@@ -76,3 +76,97 @@ class CustomerTests(APITestCase):
         self.sell(paid=40, customer_name='Nia')
         nia = self.client.get('/api/customers/?search=nia').data['customers'][0]
         self.assertEqual((nia['sale_count'], nia['total_spent'], nia['balance']), (1, 100, 60))
+
+
+
+class CreditLimitTests(APITestCase):
+    def setUp(self):
+        from apps.inventory.models import Product
+        self.admin = User.objects.create_user('boss', password='x', role='admin')
+        self.cashier = User.objects.create_user('till', password='x', role='cashier')
+        self.oil = Product.objects.create(name='Oil', sku='OIL-CL', cost_price=10,
+                                          selling_price=100, quantity=100)
+        self.ann = Customer.objects.create(name='Ann', phone='0772000111', credit_limit=500)
+        self._n = 0
+
+    def sell(self, price, paid=0, name='Ann', phone='0772000111', **extra):
+        self._n += 1
+        return self.client.post('/api/sales/', {
+            'reference': f'CL-{self._n}', 'customer_name': name, 'customer_phone': phone,
+            'amount_paid': paid, **extra,
+            'items': [{'product': self.oil.id, 'quantity': 1, 'unit_price': price}],
+        }, format='json')
+
+    def test_credit_up_to_the_limit_is_allowed(self):
+        self.client.force_authenticate(self.cashier)
+        self.assertEqual(self.sell(300).status_code, 201)
+        self.assertEqual(self.sell(200).status_code, 201)  # exactly 500 owed
+
+    def test_sale_that_goes_over_the_limit_is_blocked(self):
+        self.client.force_authenticate(self.cashier)
+        self.sell(400)
+        res = self.sell(300, paid=100)  # 200 more on credit -> 600
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('at most 100 more', str(res.data['credit_limit']))
+        self.assertEqual(self.oil.__class__.objects.get(pk=self.oil.pk).quantity, 99)  # no stock taken
+
+    def test_paying_enough_now_lets_the_sale_through(self):
+        self.client.force_authenticate(self.cashier)
+        self.sell(400)
+        self.assertEqual(self.sell(300, paid=200).status_code, 201)  # 100 more -> 500
+
+    def test_cashier_cannot_override_but_admin_can(self):
+        self.client.force_authenticate(self.cashier)
+        self.sell(500)
+        self.assertEqual(self.sell(100, override_credit_limit=True).status_code, 400)
+        self.client.force_authenticate(self.admin)
+        res = self.sell(100, override_credit_limit=True)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertIn('Allowed over credit limit by boss', res.data['notes'])
+
+    def test_no_limit_means_no_check_and_cash_sales_always_pass(self):
+        self.client.force_authenticate(self.cashier)
+        self.assertEqual(self.sell(5000, name='Bob', phone='0772999888').status_code, 201)
+        self.sell(500)
+        self.assertEqual(self.sell(300, paid=300).status_code, 201)
+
+    def test_limit_is_shown_and_only_managers_can_set_it(self):
+        self.client.force_authenticate(self.cashier)
+        self.assertEqual(self.client.patch(f'/api/customers/{self.ann.id}/',
+                                           {'credit_limit': 9999}, format='json').status_code, 403)
+        self.client.force_authenticate(self.admin)
+        res = self.client.patch(f'/api/customers/{self.ann.id}/', {'credit_limit': 800}, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        rows = self.client.get('/api/customers/').data['customers']
+        self.assertEqual(rows[0]['credit_limit'], 800)
+        self.assertEqual(self.client.get(f'/api/customers/{self.ann.id}/').data['credit_limit'], 800)
+
+
+    def test_credit_check_finds_typed_customer_without_creating_one(self):
+        self.client.force_authenticate(self.cashier)
+        self.sell(300)
+        res = self.client.get('/api/customers/credit-check/?name=ann&phone=').data
+        self.assertEqual(res, {'found': True, 'id': self.ann.id, 'name': 'Ann',
+                               'balance': 300, 'credit_limit': 500})
+        res = self.client.get('/api/customers/credit-check/?name=Nobody&phone=0700000001').data
+        self.assertEqual(res, {'found': False})
+        self.assertEqual(Customer.objects.count(), 1)
+
+    def test_manual_debt_respects_the_limit(self):
+        self.client.force_authenticate(self.admin)
+        self.sell(400)
+        body = {'debt_type': 'receivable', 'party_name': 'Ann', 'party_phone': '0772000111',
+                'amount': 200}
+        res = self.client.post('/api/debts/', body, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('at most 100 more', str(res.data['credit_limit']))
+        res = self.client.post('/api/debts/', {**body, 'override_credit_limit': True}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertIn('Allowed over credit limit by boss', Debt.objects.get(pk=res.data['id']).charges.last().notes)
+        # Within the limit, and payables, are never checked
+        self.assertEqual(self.client.post('/api/debts/', {**body, 'party_name': 'Bob',
+                                                          'party_phone': '0711111111'},
+                                          format='json').status_code, 201)
+        self.assertEqual(self.client.post('/api/debts/', {**body, 'debt_type': 'payable',
+                                                          'amount': 99999},
+                                          format='json').status_code, 201)

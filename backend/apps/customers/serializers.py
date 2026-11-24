@@ -6,13 +6,18 @@ from .models import Customer, name_key, phone_key
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = ['id', 'name', 'phone', 'notes', 'created_at']
+        fields = ['id', 'name', 'phone', 'notes', 'credit_limit', 'created_at']
         read_only_fields = ['created_at']
 
     def validate_name(self, value):
         value = ' '.join((value or '').split())
         if not value:
             raise serializers.ValidationError('Name is required.')
+        return value
+
+    def validate_credit_limit(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError('Credit limit cannot be negative.')
         return value
 
     def validate(self, attrs):

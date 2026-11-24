@@ -22,6 +22,8 @@ class Customer(models.Model):
     name = models.CharField(max_length=200)
     phone = models.CharField(max_length=50, blank=True)
     notes = models.TextField(blank=True)
+    # Most this customer may owe on credit; empty = no limit
+    credit_limit = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     # Normalised copies used for matching (see services.find_or_create)
     name_key = models.CharField(max_length=200, db_index=True, editable=False)
     phone_key = models.CharField(max_length=20, db_index=True, blank=True, editable=False)
@@ -42,3 +44,11 @@ class Customer(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.phone})" if self.phone else self.name
+
+
+def amount_owed(customer):
+    """What the customer owes us right now, across their open debts."""
+    from django.db.models import F, Sum
+    from decimal import Decimal
+    return customer.debts.filter(debt_type='receivable').exclude(status='paid').aggregate(
+        t=Sum(F('amount') - F('amount_paid')))['t'] or Decimal('0')

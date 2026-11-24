@@ -42,6 +42,8 @@ class SaleSerializer(serializers.ModelSerializer):
 
     # Admins can record a forgotten sale on an earlier day
     sale_date = serializers.DateField(write_only=True, required=False, allow_null=True)
+    # An admin or manager can let a sale take a customer past their credit limit
+    override_credit_limit = serializers.BooleanField(write_only=True, required=False, default=False)
 
     class Meta:
         model = Sale
@@ -50,7 +52,7 @@ class SaleSerializer(serializers.ModelSerializer):
             'payment_type', 'payment_method', 'paid_at_sale',
             'total_amount', 'amount_paid', 'balance',
             'debt_balance', 'debt_status', 'debt_id',
-            'notes', 'items', 'created_at', 'sale_date',
+            'notes', 'items', 'created_at', 'sale_date', 'override_credit_limit',
         ]
         read_only_fields = ['user', 'created_at', 'total_amount', 'payment_type', 'paid_at_sale']
 
@@ -118,6 +120,7 @@ class SaleSerializer(serializers.ModelSerializer):
         items_data = validated_data.pop('items')
         total = validated_data.pop('_total')
         sale_date = validated_data.pop('sale_date', None)
+        override_limit = validated_data.pop('override_credit_limit', False)
         user = validated_data.get('user')
         with transaction.atomic():
             # Lock products and check stock before selling
@@ -135,6 +138,12 @@ class SaleSerializer(serializers.ModelSerializer):
             if not validated_data.get('customer'):
                 validated_data['customer'] = find_or_create(
                     validated_data['customer_name'], validated_data['customer_phone'], user=user)
+            unpaid = total - (validated_data.get('amount_paid') or Decimal('0'))
+            if self._check_credit_limit(validated_data.get('customer'), unpaid, override_limit, user):
+                validated_data['notes'] = (
+                    f"{validated_data.get('notes') or ''}\n"
+                    f"Allowed over credit limit by {user.username}."
+                ).strip()
             sale = Sale.objects.create(
                 total_amount=total, paid_at_sale=validated_data.get('amount_paid') or 0,
                 **validated_data)
@@ -171,6 +180,23 @@ class SaleSerializer(serializers.ModelSerializer):
             if sale_date and sale_date != timezone.localdate():
                 self._backdate(sale, sale_date, movement_ids)
         return sale
+
+    def _check_credit_limit(self, customer, unpaid, override, user):
+        """Returns True when an admin/manager let the sale go over the limit."""
+        from apps.customers.models import Customer
+        from apps.customers.services import credit_limit_message, credit_limit_problem
+        if unpaid <= 0 or customer is None:
+            return False
+        # Lock the customer so two sales at once can't both slip under the limit
+        customer = Customer.objects.select_for_update().get(pk=customer.pk)
+        problem = credit_limit_problem(customer, unpaid)
+        if problem is None:
+            return False
+        can_override = getattr(user, 'role', None) in ('admin', 'manager')
+        if override and can_override:
+            return True
+        raise serializers.ValidationError({'credit_limit': credit_limit_message(
+            customer, problem, can_override=can_override)})
 
     def _backdate(self, sale, sale_date, movement_ids):
         """Move the sale and everything it created onto `sale_date` (keeping the time of day)."""

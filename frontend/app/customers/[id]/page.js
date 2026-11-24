@@ -76,7 +76,10 @@ export default function CustomerDetailPage() {
   const saveEdit = async (e) => {
     e.preventDefault();
     try {
-      await api.patch(`/customers/${id}/`, editing);
+      await api.patch(`/customers/${id}/`, {
+        ...editing,
+        credit_limit: editing.credit_limit === '' ? null : editing.credit_limit,
+      });
       toast.success('Customer updated');
       setEditing(null);
       load();
@@ -143,7 +146,10 @@ export default function CustomerDetailPage() {
           )}
           {can.editCustomers(user) && (
             <button className="btn btn-secondary"
-              onClick={() => setEditing({ name: data.name, phone: data.phone || '', notes: data.notes || '' })}>
+              onClick={() => setEditing({
+                name: data.name, phone: data.phone || '', notes: data.notes || '',
+                credit_limit: data.credit_limit ?? '',
+              })}>
               ✏️ Edit
             </button>
           )}
@@ -169,6 +175,13 @@ export default function CustomerDetailPage() {
               <div><label>Phone</label>
                 <input value={editing.phone}
                   onChange={(e) => setEditing({ ...editing, phone: e.target.value })} /></div>
+              <div className="md:col-span-2"><label>Credit limit</label>
+                <input type="number" min="0" step="1" placeholder="No limit" value={editing.credit_limit}
+                  onChange={(e) => setEditing({ ...editing, credit_limit: e.target.value })} />
+                <p className="text-xs text-slate-500 mt-1">
+                  The most they may owe at any time. Sales that would take them past it are stopped
+                  unless an admin or manager allows it. Leave empty for no limit.
+                </p></div>
               <div className="md:col-span-2"><label>Notes</label>
                 <textarea rows={3} value={editing.notes}
                   onChange={(e) => setEditing({ ...editing, notes: e.target.value })} /></div>
@@ -217,11 +230,17 @@ export default function CustomerDetailPage() {
       )}
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <Kpi label="Total Sales" value={s.sale_count} hint="Transactions" />
         <Kpi label="Lifetime Spent" value={money(s.total_spent)} accent="green" hint="Sum of all sales" />
         <Kpi label="Outstanding" value={money(s.outstanding)} accent={s.outstanding > 0 ? 'red' : ''} hint="Current balance owed" />
         <Kpi label="Paid on Debts" value={money(s.total_paid_on_debts)} accent="amber" hint="Total debt payments" />
+        <Kpi label="Credit Limit"
+          value={data.credit_limit === null ? 'No limit' : money(data.credit_limit)}
+          accent={data.credit_limit !== null && s.outstanding > data.credit_limit ? 'red' : ''}
+          hint={data.credit_limit === null ? 'Set one with Edit'
+            : s.outstanding > data.credit_limit ? `Over by ${money(s.outstanding - data.credit_limit)}`
+              : `${money(data.credit_limit - s.outstanding)} left`} />
       </div>
 
       {/* Debts */}

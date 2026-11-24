@@ -12,6 +12,8 @@ import { openWhatsApp, renderTemplate, DEFAULT_TEMPLATES } from '@/lib/whatsapp'
 import { useUser, can } from '@/lib/useUser';
 import { PAYMENT_METHODS, methodLabel } from '@/lib/paymentMethods';
 import CustomerNameInput from '@/components/CustomerNameInput';
+import CreditLimitWarning from '@/components/CreditLimitWarning';
+import { useCreditCheck, creditPosition } from '@/lib/useCreditCheck';
 
 const todayISO = () => {
   const d = new Date();
@@ -29,9 +31,12 @@ export default function SalesPage() {
   const [form, setForm] = useState({
     reference: '', customer: null, customer_name: '', customer_phone: '',
     payment_type: 'cash', payment_method: 'cash', amount_paid: '', notes: '', sale_date: '',
+    override_credit_limit: false,
   });
   const [items, setItems] = useState([{ product: '', quantity: 1, unit_price: 0 }]);
   const [error, setError] = useState('');
+  // Balance and credit limit of the customer picked from the list
+  const [pickedCustomer, setPickedCustomer] = useState(null);
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState(null);
   const showProfit = can.viewInventoryCost(user);
@@ -96,13 +101,22 @@ export default function SalesPage() {
   };
 
   const resetForm = () => {
+    setPickedCustomer(null);
     setForm({
       reference: generateRef(), customer: null, customer_name: '', customer_phone: '',
       payment_type: 'cash', payment_method: 'cash', amount_paid: '', notes: '', sale_date: '',
+    override_credit_limit: false,
     });
     setItems([{ product: '', quantity: 1, unit_price: 0 }]);
   };
   useEffect(() => { resetForm(); }, []);
+
+  const unpaidNow = Math.max(0, total - (parseFloat(form.amount_paid) || 0));
+  // A typed (not picked) name is looked up so the warning shows before saving
+  const typedCustomer = useCreditCheck(form.customer_name, form.customer_phone,
+    !form.customer && form.payment_type !== 'cash');
+  const creditCheck = form.payment_type === 'cash' ? null
+    : creditPosition(pickedCustomer || typedCustomer, unpaidNow);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -268,9 +282,9 @@ export default function SalesPage() {
               placeholder={form.payment_type === 'cash' ? 'Walk-in' : 'Required for credit'}
               required={form.payment_type !== 'cash'} value={form.customer_name}
               picked={!!form.customer}
-              onType={(text) => setForm({ ...form, customer: null, customer_name: text })}
-              onPick={(c) => setForm({ ...form, customer: c.id, customer_name: c.name, customer_phone: c.phone || '' })}
-              onClear={() => setForm({ ...form, customer: null, customer_name: '', customer_phone: '' })} /></div>
+              onType={(text) => { setPickedCustomer(null); setForm({ ...form, customer: null, customer_name: text, override_credit_limit: false }); }}
+              onPick={(c) => { setPickedCustomer(c); setForm({ ...form, customer: c.id, customer_name: c.name, customer_phone: c.phone || '', override_credit_limit: false }); }}
+              onClear={() => { setPickedCustomer(null); setForm({ ...form, customer: null, customer_name: '', customer_phone: '', override_credit_limit: false }); }} /></div>
           <div><label>Customer Phone</label>
             <input placeholder="Optional" value={form.customer_phone} readOnly={!!form.customer}
               title={form.customer ? 'Change the phone on the Customers page' : undefined}
@@ -313,6 +327,10 @@ export default function SalesPage() {
             {' '}(combined with any balance they already owe).
           </div>
         )}
+
+        <CreditLimitWarning position={creditCheck} money={money}
+          canOverride={can.editCustomers(user)} override={form.override_credit_limit}
+          onOverride={(v) => setForm({ ...form, override_credit_limit: v })} />
 
         <div className="border-t border-slate-100 pt-4">
           <div className="flex items-center justify-between mb-2">
